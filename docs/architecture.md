@@ -1,14 +1,16 @@
 # Architecture
 
 > **Status:** Stage 1 complete; Stage 2 (Commits 2.1–2.3) implemented;
-> Stage 3 Commit 3.1 (BM25 baseline) implemented. Implemented:
+> Stage 3 Commit 3.1 (BM25 baseline) and Commit 3.2 (chunking V2 and the
+> full-corpus embedding pipeline) implemented.
+> Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
 > - `founderlens.evaluation` (dataset schema and validation);
 > - `founderlens.ingestion` (raw page-level extraction, normalization, table
 >   candidates, page-aware chunking);
 > - `founderlens.retrieval` (lexical tokenizer, in-memory BM25 baseline,
->   shared result type).
+>   shared result type, token-length audit and embedding artifact pipeline).
 >
 > Everything else below is the **planned** design and may change as
 > evaluation results come in.
@@ -224,25 +226,278 @@ judgements.
 - Period and company context outside a chunk's own text (e.g. a table header
   in an earlier chunk) is invisible to BM25.
 
-**Requirements for Commit 3.2 (dense retrieval).** Not implemented yet. The
-120-word budget does not guarantee compatibility with the planned
-`sentence-transformers/all-MiniLM-L6-v2`, so Commit 3.2 must:
-- audit every chunk's length with the model's actual tokenizer, special
-  tokens and any input prefix included, and truncation disabled;
-- inspect the model's effective maximum sequence length (`max_seq_length`
-  and the tokenizer limit), not assume it;
-- never truncate text silently;
-- if a new chunk configuration is needed, keep the original collection and
-  artifacts and build a separately identified one;
-- evaluate BM25 and dense retrieval on the same collection, rebuilding BM25
-  on any new one;
-- check that the embedding dependencies are compatible with the pinned
-  `numpy==2.5.4`, and change the pin only deliberately;
-- pin the embedding model revision (commit hash) for reproducibility.
+### Chunk embeddings (Commit 3.2)
 
-- **Dense retrieval (Stage 3).** Sentence Transformers embeddings with a FAISS
-  CPU index (exact inner-product search is sufficient at this corpus size).
-  Handles paraphrase and semantic queries BM25 misses.
+`founderlens.retrieval.embeddings` builds the dense representation that
+Commit 3.3 will search.
+- The original 120-word collection (**V1**) cannot be embedded: 9 of its
+  chunks exceed the model's token limit.
+- Commit 3.2 therefore adds **chunking V2**, which keeps the same word
+  budget and overlap plus a hard model-token limit.
+- The complete V2 collection (164 chunks) is audited (0 over the limit),
+  embedded and validated.
+- V1 stays frozen as the historical baseline.
+
+**Lexical vs semantic.**
+- BM25 matches exact tokens, which is strong for figures, tickers and line
+  items.
+- An embedding maps each chunk to a 384-dimensional vector whose direction
+  reflects meaning, so a paraphrase can match without shared words. Exact
+  numbers are weak signals there.
+- The two are complementary, and they will be compared on the same chunk
+  collection.
+
+**Model.** `sentence-transformers/all-MiniLM-L6-v2` at revision
+`1110a243fdf4706b3f48f1d95db1a4f5529b4d41`, never `main`. License
+Apache-2.0.
+- It was chosen as a small, widely used English sentence-embedding baseline:
+  6 layers, 384 dimensions, about 91 MB of safetensors weights, fast on CPU.
+- It is a starting point; no evaluation has selected it.
+- Inference is local on CPU in eval mode under `torch.inference_mode()`.
+- `trust_remote_code=False` and safetensors weights only. No text is sent to
+  a hosted service.
+- The modules are `Transformer`, mean `Pooling` and `Normalize`.
+
+**Sequence limit and the token audit.** Chunks are budgeted in whitespace
+*words*, but the model reads WordPiece *tokens*, and financial text splits
+heavily: `$39,331` alone is 4 tokens. The effective limit is the smallest of:
+- the model's `max_seq_length` (256);
+- the tokenizer's `model_max_length` (256);
+- the position embeddings (512).
+
+It is **256 tokens**, including `[CLS]` and `[SEP]`. Sentence Transformers
+would silently truncate anything longer, dropping evidence while the chunk
+still appeared to be represented. So every chunk is measured first, with
+special tokens on and truncation and padding off.
+- `build` refuses to embed if any chunk overflows.
+- `embed_texts` repeats the check before encoding anything.
+
+**Why V1 overflows.** Financial tables are dense in digits and punctuation.
+WordPiece splits `$`, each digit group, `,`, `.`, `(`, `)` and `%` into
+separate tokens, so a 120-word table window reaches 2.6–3.0 tokens per word,
+against about 1.4 in prose.
+
+V1 audit (`1ccad2ad…50c3`, 162 chunks):
+- tokens per chunk: min 40, median 162, mean 169.0, p90 245, p95 260, p99
+  293, max 308;
+- 16 chunks near the limit (231–256 tokens);
+- **9 over 256**, all on dense table pages:
+
+| Page | Chunk(s) | Tokens |
+|------|----------|--------|
+| goog-2024-q3 p6 | c0–c2 | 272, 308, 279 |
+| goog-2024-q4 p6 | c0–c2 | 260, 293, 283 |
+| nvda-fy2025-q3 p7 | c1 | 273 |
+| nvda-fy2025-q4 p6 | c1 | 261 |
+| nvda-fy2025-q4 p7 | c2 | 262 |
+
+**Why adaptive chunking, not fixed 96-word windows.**
+- In-memory tests found that a 96-word budget would fit every chunk (203
+  chunks, max 241 tokens).
+- But it shrinks every chunk on every page to fix five pages, leaves only 15
+  tokens of headroom, and would break again if text became denser.
+- Adaptive chunking shortens only the windows that actually overflow and
+  enforces the limit by construction.
+
+### Chunking V2 (algorithm version 2)
+
+`ChunkingConfig(token_budget=TokenBudget(...))` keeps the version-1 rule
+(120 words, 24 overlap, paragraph > line > word boundaries, exact slices,
+page-aware) and adds a hard limit of **256 model tokens**. The limit is
+counted by the pinned MiniLM tokenizer, injected through a small
+`TokenCounter` interface, on the exact chunk text, with `[CLS]`/`[SEP]`
+included and truncation and padding off.
+
+For each chunk:
+1. Use the version-1 end if it fits, so unaffected pages are byte-for-byte
+   the same spans as V1.
+2. Otherwise count every candidate end (no monotonic assumption) and choose,
+   among those that fit, the strongest boundary in the second half of the
+   longest fitting window (ties to the latest end).
+3. If nothing fits from the start, reduce the overlap word by word. If even
+   one word cannot fit on its own, the run fails and names the page and
+   character span, with no truncation.
+
+Every emitted chunk is re-counted and validated on its own: exact span, word
+budget, overlap, token budget, forward progress and full non-whitespace
+coverage. Ordinary tests use a fake tokenizer and load no model.
+
+**V1 vs V2 on corpus v1.0.0** (both real runs):
+
+| | V1 | V2 |
+|---|---:|---:|
+| Configuration ID | `a8a0288e0348` | `0c2f87411627` |
+| Algorithm version | 1 | 2 |
+| Chunks | 162 | 164 |
+| Chunks per document (goog Q3 / Q4, nvda Q3 / Q4) | 40 / 43 / 38 / 41 | 41 / 44 / 38 / 41 |
+| Words per chunk (min / median / mean / max) | 26 / 109 / 99.8 / 120 | 27 / 107 / 98.8 / 120 |
+| Tokens per chunk (min / median / mean / p90 / p95 / p99 / max) | 40 / 162 / 169.0 / 245 / 260 / 293 / 308 | 40 / 162 / 167.6 / 240 / 246 / 252 / 255 |
+| Near the limit (≥ 231 tokens) | 16 | 24 |
+| **Over 256 tokens** | **9** | **0** |
+| Overlap (min / mean / max words) | 4 / 18.2 / 24 | 4 / 18.2 / 24 |
+| Collection SHA-256 | `1ccad2ad…50c3` | `f9a8f12a…59c55a8` |
+
+- 149 chunk spans are identical between V1 and V2.
+- Only five pages differ: goog Q3 p6, goog Q4 p6, nvda Q3 p7, nvda Q4 p6
+  and p7.
+- 10 V2 chunks were shortened by the token budget, and there are no forced
+  mid-line splits.
+
+**Identity and compatibility rules.**
+- Collections are selected explicitly, never as "latest":
+  - `--collection v1` is `data/processed/chunks.jsonl`, frozen;
+  - `--collection v2` is `data/processed/chunks.0c2f87411627.jsonl`.
+- A collection is identified by its chunking configuration ID, which every
+  chunk ID ends with, plus its artifact SHA-256.
+- The V2 configuration hashes the model ID, immutable revision, tokenizer
+  class, token limit and special-token policy.
+- A V2 build refuses to write V1's file names. Loading a named collection
+  checks its configuration ID.
+- Embedding artifacts live in `artifacts/embeddings/<chunking config ID>/`
+  and record the source collection hash. An artifact is rejected with any
+  other collection or chunk order.
+- The evaluation labels are page-level `(document_id, page_number)` pairs,
+  independent of chunk IDs, so they apply unchanged to V2.
+- **BM25 and dense retrieval must be compared on the same collection (V2).**
+  The evaluation protocol requires the same chunker, size and overlap for
+  both, so that differences come from the retriever and not from the
+  chunks.
+
+**BM25 on V2.** `python -m founderlens.retrieval.bm25 --collection v2`
+(default remains V1). BM25 scoring identity (`c21bdd0691f8`) is separate from
+collection identity.
+- All 164 chunks are indexed; the vocabulary is 2,577 tokens.
+- Lexical tokens per chunk: 17–127 (mean 94.7).
+- For every smoke query, the top-5 results come from the same pages as on
+  V1. This is a functional check, not a quality measurement.
+
+**Embedding invariants.**
+- Input is the exact chunk text, with no prefix, prompt or metadata, in
+  collection order, in batches of 32.
+- Each output is checked for shape and finite values, and rejected if its
+  norm is zero.
+- Each row is L2-normalized in float64 and stored as float32. Unit length
+  makes the dot product equal cosine similarity, so Commit 3.3 can rank with
+  one matrix product.
+- Rows must have unit norm within `1e-5`.
+
+**Artifact.** `artifacts/embeddings/<chunking config ID>/` (git-ignored)
+holds:
+- `embeddings.npy`, the float32 matrix loaded with `allow_pickle=False`;
+- `manifest.json`, which records:
+  - the schema version;
+  - the semantic configuration and `embedding_config_id`;
+  - the source chunk SHA-256 and chunk count;
+  - the matrix SHA-256, shape, dtype and normalization;
+  - the ordered row → `chunk_id` mapping;
+  - model facts (revision, license, tokenizer, limits);
+  - execution details (device, batch size, threads, Python, platform,
+    library versions).
+
+There are no timestamps or durations; those go to
+`reports/embedding_build_report.<chunking config ID>.json`. Both files are
+staged in a temporary
+directory, validated, then moved into place, so a failed build leaves the
+previous artifact untouched.
+
+**Loading.** The loader rejects:
+- missing files and malformed or extra manifest keys;
+- a wrong schema version or configuration ID;
+- a matrix hash mismatch;
+- wrong shape or dtype, non-finite values or non-unit rows;
+- duplicate or reordered rows;
+- an artifact built from a different chunk collection (stale).
+
+**Identity.** Three things identify an artifact:
+- `embedding_config_id` hashes only the semantic settings: model, revision,
+  dimension, sequence limit, dtype, normalization and input and overflow
+  policy;
+- the source chunk SHA-256 identifies the corpus;
+- the matrix SHA-256 identifies the artifact.
+
+Batch size, device and threads are execution details.
+
+**V2 embedding artifact (measured here, Windows, CPU, 12 threads).**
+- Shape (164, 384), float32; all values finite; no zero rows.
+- L2 norms 0.99999997–1.00000003 (max deviation 3.0e-8).
+- `embedding_config_id` `cdf57c2283c6`.
+- Matrix SHA-256 `ec351632…bdaddb08e` (252,032 bytes); manifest 9,697
+  bytes.
+- Embedding took about 3 s.
+
+**Reproducibility.**
+- V2 built twice from the same normalized source: byte-identical
+  collections.
+- Two complete embedding builds with independent model loads gave
+  **byte-identical** matrices (max abs difference 0.0) and identical
+  manifests.
+- Changing the batch size changes values by at most 1.5e-7 (measured on
+  V1's 153 fitting chunks). The real-model test allows `1e-6` between runs.
+- Bitwise equality across hardware, thread counts, platforms or library
+  versions is **not** claimed.
+
+**How Commit 3.3 will use it.**
+1. Load the artifact with the chunk collection (rejects stale or mismatched
+   artifacts).
+2. Embed the query with the same pinned model and the same overflow check.
+3. Rank with `matrix @ query`.
+4. Return `RetrievalResult(method="dense", …)` over the same chunk records
+   as BM25.
+
+**Commands and installation.**
+
+```powershell
+python -m founderlens.retrieval.embeddings build-collection --allow-download  # once: fetch model; build V2
+python -m founderlens.retrieval.embeddings validate-collection --collection v2
+python -m founderlens.retrieval.embeddings audit --collection v2     # reports/embedding_token_audit.<id>.json
+python -m founderlens.retrieval.embeddings build --collection v2     # audit, embed, publish
+python -m founderlens.retrieval.embeddings validate --collection v2  # check the stored artifact
+python -m founderlens.retrieval.bm25 --collection v2 --query "NVIDIA Blackwell"
+```
+
+`audit --collection v1` still runs and exits `1`, listing the 9 over-limit
+V1 chunks. `build --collection v1` refuses without encoding anything.
+
+- The model is cached in the user's Hugging Face cache, never in the
+  repository. Without `--allow-download` it is loaded with
+  `local_files_only=True`, so there are no network calls.
+- Audit and validate exit `1` on any failure, and `build` additionally on any
+  overflow. Invalid arguments exit `2`.
+- Default tests use a fake encoder, so no model is needed. The real-model
+  test is opt-in: `FOUNDERLENS_REAL_CORPUS=1` and `FOUNDERLENS_REAL_MODEL=1`.
+- On Linux, install the CPU-only `torch==2.15.0` from
+  `https://download.pytorch.org/whl/cpu` before `pip install -e .`, as CI
+  does. Otherwise pip pulls the CUDA build and several GB of NVIDIA
+  libraries.
+
+**Licensing and deployment notes.**
+- The model and the new libraries are permissively licensed (Apache-2.0 or
+  BSD-style). The PyMuPDF AGPL question is unchanged and still open.
+- PyTorch adds a sizeable install (about 127 MB wheel on Windows). A
+  deployment needs the model files (about 92 MB) available offline or
+  downloaded at the pinned revision.
+- V2 depends on the tokenizer: a different model, revision or tokenizer
+  class is a different chunk collection, and `build-collection` refuses a
+  mismatch.
+- 24 V2 chunks sit within 25 tokens of the limit. That is safe by
+  construction, but any model with a shorter limit needs a new collection.
+
+**Resolved environment (CPython 3.12.10, Windows, `pip freeze`).**
+- Pinned directly: `sentence-transformers==6.2.0`, `transformers==5.22.1`,
+  `tokenizers==0.23.3`, `huggingface-hub==2.4.0`, `torch==2.15.0`
+  (`+cpu`), `numpy==2.5.4`, `rank-bm25==0.2.2`, `pymupdf==1.28.2`.
+- Resolved transitively: `safetensors==0.8.0`, `scipy==1.18.1`,
+  `scikit-learn==1.9.1`, `regex==2026.11.15`, `hf-xet==1.8.0`,
+  `httpx2==2.16.1`, `sympy==1.14.0`, `networkx==3.7`, `filelock==4.2.10`,
+  `fsspec==2026.9.0`, `Jinja2==3.1.6`, `joblib==1.6.0`,
+  `threadpoolctl==3.8.0`, `tqdm==4.70.1`, `PyYAML==6.0.3`, `typer==0.29.1`,
+  `click==8.5.1`, `packaging==26.3`.
+- The transitive packages are not pinned in `pyproject.toml`. Every
+  embedding manifest records the versions it was built with.
+
+- **Dense retrieval (Commit 3.3, planned).** Exact search over the
+  normalized matrix (a FAISS CPU index is optional at this size). Expected to
+  handle paraphrase that BM25 misses; not measured yet.
 - **Hybrid (optional).** Score or rank fusion, adopted only if evaluation
   shows a measurable gain.
 
@@ -306,7 +561,7 @@ pass.
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
 | `evaluation` *(schema and validation implemented)* | Dataset schema and validation; metrics, runner and judge planned | config, corpus manifest |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
-| `retrieval` *(BM25 implemented)* | Lexical tokenizer, BM25 baseline, result type (done); dense, FAISS index | config, ingestion chunks, rank-bm25, NumPy |
+| `retrieval` *(BM25 and embedding pipeline implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit and embedding artifacts (done); dense search (planned) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |
@@ -322,8 +577,8 @@ Modules are created only in the stage that needs them.
 | `evaluation/` | Questions, metadata and hashes | Yes |
 | `data/raw/` | Downloaded PDFs | No |
 | `data/processed/` | `pages.raw.jsonl` (raw page text), `pages.normalized.jsonl` (normalized text + table candidates), `chunks.jsonl` (retrieval chunks) | No |
-| `artifacts/` | Indexes, embeddings | No |
-| `reports/` | Extraction, normalization and chunking reports, BM25 smoke report, evaluation outputs | No (summaries copied to docs when verified) |
+| `artifacts/` | `embeddings/<chunking config ID>/` (`embeddings.npy` + `manifest.json`); later indexes | No |
+| `reports/` | Extraction, normalization and chunking reports, BM25 smoke report, embedding token audit and build reports, evaluation outputs | No (summaries copied to docs when verified) |
 
 ## Design decisions and trade-offs
 

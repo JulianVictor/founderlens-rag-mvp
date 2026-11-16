@@ -6,13 +6,15 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 3 in progress (Commit 3.1).** Stages 1 and 2 are
-> complete: the project foundation, a verified four-document corpus, a
+> **Current status: Stage 3 in progress (Commits 3.1–3.2).** Stages 1 and 2
+> are complete: the project foundation, a verified four-document corpus, a
 > human-reviewed frozen evaluation dataset, and page-aware extraction,
-> normalization and chunking. A BM25 lexical retrieval baseline is
-> implemented, but no retrieval quality has been measured yet. Embeddings, dense
-> retrieval, generation, evaluation runs, the demo UI and deployment are
-> **not implemented yet**. See [Implementation status](#implementation-status).
+> normalization and chunking. A BM25 lexical retrieval baseline and a local
+> embedding pipeline are implemented. Token-budgeted chunking V2 (164 chunks,
+> all within the model's 256-token limit) is fully embedded. No retrieval
+> quality has been measured. Dense retrieval, generation, evaluation runs, the
+> demo UI and deployment are **not implemented yet**. See
+> [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
 application.
@@ -64,7 +66,7 @@ Details and a Mermaid diagram: [docs/architecture.md](docs/architecture.md).
 | PDF validity checks | PyMuPDF 1.28.2 | In use (page counts, readability) |
 | PDF text extraction | PyMuPDF 1.28.2 | In use (raw page-level text, Commit 2.1) |
 | Keyword retrieval | rank-bm25 0.2.2 (BM25Okapi) + NumPy 2.5.4 | In use (in-memory baseline, Commit 3.1) |
-| Embeddings | Sentence Transformers | Planned (Stage 3) |
+| Embeddings | sentence-transformers 6.2.0, `all-MiniLM-L6-v2` (pinned revision), PyTorch 2.15.0 CPU | In use (Commit 3.2): chunking V2 fully embedded; no dense search yet |
 | Vector index | FAISS CPU | Planned (Stage 3) |
 | Generation | OpenAI API | Planned (Stage 4) |
 | Demo | Streamlit | Planned (Stage 7) |
@@ -97,7 +99,21 @@ python -m founderlens.ingestion.normalize
 python -m founderlens.ingestion.chunk
 # Search the chunks with the BM25 baseline (in-memory index, no network)
 python -m founderlens.retrieval.bm25 --query "NVIDIA Blackwell" --top-k 5
+
+# Chunking V2 + embeddings: fetch the pinned model once (about 92 MB, user
+# Hugging Face cache) while building the token-budgeted collection V2
+python -m founderlens.retrieval.embeddings build-collection --allow-download
+# Offline afterwards: validate, audit, embed and check V2 (V1 stays frozen)
+python -m founderlens.retrieval.embeddings validate-collection --collection v2
+python -m founderlens.retrieval.embeddings audit --collection v2
+python -m founderlens.retrieval.embeddings build --collection v2
+python -m founderlens.retrieval.embeddings validate --collection v2
+python -m founderlens.retrieval.bm25 --collection v2 --query "NVIDIA Blackwell"
 ```
+
+PyTorch is a pinned runtime dependency. On Windows and macOS the PyPI wheel
+is CPU-only. On Linux, install the CPU build first, as CI does:
+`python -m pip install "torch==2.15.0" --index-url https://download.pytorch.org/whl/cpu`.
 
 If the automated download fails, follow the manual steps in
 [data/README.md](data/README.md#manual-download-if-automated-download-fails).
@@ -223,7 +239,34 @@ real-corpus checks: CI never downloads the financial PDFs.
   `--smoke` for `reports/bm25_smoke_report.json`.
 - Functional smoke test only: no retrieval metrics have been computed.
 
-**Not implemented:** embeddings, dense retrieval, vector
+**Implemented (Commit 3.2), see [docs/architecture.md](docs/architecture.md#chunk-embeddings-commit-32):**
+- Local embeddings with `sentence-transformers/all-MiniLM-L6-v2`:
+  - pinned to revision `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`;
+  - CPU, eval mode, safetensors weights, no remote code;
+  - no text leaves the machine.
+- A mandatory token-length audit with the model's own tokenizer (special
+  tokens on, truncation off). Over-limit chunks are never truncated: the
+  build stops before encoding.
+- L2-normalized float32 vectors (384 dimensions), stored in
+  `artifacts/embeddings/<collection id>/` as `embeddings.npy` (no pickle)
+  plus `manifest.json`: configuration ID, source chunk hash, matrix hash and
+  the ordered row → chunk mapping.
+  - The artifact is published atomically and validated on load, and rejected
+    with any other collection.
+- **Chunking V2.** The original 120-word collection (V1, 162 chunks, kept
+  frozen) has 9 chunks over the 256-token limit (max 308), all on dense
+  financial tables, where digits and punctuation split into many tokens.
+  - V2 keeps the same 120/24-word rule and adds a hard 256-token budget in
+    the pinned tokenizer. It shortens only windows that overflow; 149 of
+    V1's spans are unchanged.
+  - Result: 164 chunks, max 255 tokens, 0 over the limit.
+  - Fixed 96-word windows were rejected: they would shrink every chunk to fix
+    five pages and leave only 15 tokens of headroom.
+- BM25 is rebuilt on V2 (`--collection v2`). V2 is fully embedded: (164,
+  384) float32, unit norm within 3e-8, and two builds were byte-identical.
+  BM25 and dense retrieval are compared on V2 only.
+
+**Not implemented:** dense retrieval, vector
 indexing, generation, citations, abstention, the evaluation harness and judge,
 the Streamlit demo, deployment. No evaluation results exist yet.
 

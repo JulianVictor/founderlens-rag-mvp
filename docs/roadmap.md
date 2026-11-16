@@ -81,9 +81,21 @@ configuration on dev data only if any chunk exceeds the model limit (see
   (chunk, raw score, provenance), a query CLI and a smoke report
   ([architecture.md](architecture.md#bm25-lexical-baseline-implemented-in-commit-31)).
   *(implemented; no retrieval metrics yet)*
-- Dense retrieval with Sentence Transformers embeddings in a FAISS CPU index
-  persisted to `artifacts/`, after measuring real model-token lengths of the
-  chunks. *(planned, Commit 3.2)*
+- Commit 3.2: reproducible local embedding pipeline
+  (`all-MiniLM-L6-v2` at a pinned revision, CPU), with a mandatory token-length
+  audit, validated L2-normalized float32 artifacts in `artifacts/embeddings/`,
+  and audit/build/validate commands
+  ([architecture.md](architecture.md#chunk-embeddings-commit-32)).
+  The original 120-word collection (V1, 162 chunks) has 9 chunks over the
+  256-token limit, so the commit adds **chunking V2**, a separate
+  token-budgeted collection of 164 chunks with 0 over the limit.
+  - BM25 is rebuilt on V2, and V2 is fully embedded as (164, 384) float32.
+  - V1 is kept frozen as the historical baseline.
+  - BM25 and dense retrieval are to be compared on V2.
+
+  *(implemented; no retrieval quality measured)*
+- Commit 3.3: dense retrieval over the embedding artifact, using the same
+  chunk collection as BM25. *(planned)*
 - Optional hybrid fusion. *(planned)*
 - Development-split benchmark of BM25 and dense on the same chunk collection.
   *(planned, Commit 3.4)*

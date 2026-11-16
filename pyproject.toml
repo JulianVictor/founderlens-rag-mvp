@@ -23,6 +23,20 @@ dependencies = [
     # Required by rank-bm25 for score arrays; pinned here because rank-bm25
     # does not pin it. Has cp312 Windows wheels. License: BSD-3-Clause.
     "numpy==2.5.4",
+    # Local chunk embeddings (Commit 3.2): sentence-transformers/all-MiniLM-L6-v2
+    # at a pinned Hugging Face revision, CPU inference. Mutually compatible set,
+    # verified with pip check on CPython 3.12; works with numpy 2.5.4 unchanged.
+    # sentence-transformers also pulls scipy and scikit-learn (unpinned).
+    # Licenses: Apache-2.0 (sentence-transformers, transformers, tokenizers,
+    # huggingface-hub); torch is BSD-style (see its metadata).
+    "sentence-transformers==6.2.0",
+    "transformers==5.22.1",
+    "tokenizers==0.23.3",
+    "huggingface-hub==2.4.0",
+    # CPU builds: the Windows/macOS PyPI wheels are CPU-only; on Linux install
+    # torch==2.15.0 from https://download.pytorch.org/whl/cpu first (as CI does),
+    # otherwise pip pulls the CUDA build and several GB of NVIDIA libraries.
+    "torch==2.15.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

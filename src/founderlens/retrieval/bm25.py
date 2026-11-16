@@ -49,9 +49,15 @@ import numpy as np
 from rank_bm25 import BM25Okapi  # type: ignore[import-untyped]  # rank-bm25 0.2.2 has no type information
 
 from founderlens.config import ConfigError, Settings, load_settings
-from founderlens.ingestion.chunk import CHUNKS_FILENAME, ChunkRecord
+from founderlens.ingestion.chunk import CHUNKS_FILENAME, DEFAULT_CHUNKING_CONFIG, ChunkRecord
 from founderlens.ingestion.extract import publish_atomic
 from founderlens.ingestion.normalize import PAGES_NORMALIZED_FILENAME
+from founderlens.retrieval.collections import (
+    COLLECTION_NAMES,
+    CollectionName,
+    collection_path,
+    load_named_collection,
+)
 from founderlens.retrieval.schema import (
     ChunkCollection,
     RetrievalError,
@@ -205,7 +211,12 @@ class BM25Retriever:
 # --------------------------------------------------------------------------- #
 
 
-def _load(settings: Settings, chunks: str | None) -> tuple[ChunkCollection, Path]:
+def _load(
+    settings: Settings, chunks: str | None, name: CollectionName | None = None
+) -> tuple[ChunkCollection, Path]:
+    """A named collection (v1 or v2), an explicit path, or by default the v1 baseline."""
+    if name is not None:
+        return load_named_collection(settings, name), collection_path(settings, name)
     root = settings.project_root
     default = settings.processed_data_dir / CHUNKS_FILENAME
     path = default if chunks is None else Path(chunks)
@@ -214,6 +225,13 @@ def _load(settings: Settings, chunks: str | None) -> tuple[ChunkCollection, Path
         path, settings.corpus_manifest_path, settings.processed_data_dir / PAGES_NORMALIZED_FILENAME
     )
     return collection, path
+
+
+def smoke_report_path(settings: Settings, collection: ChunkCollection) -> Path:
+    """V1 keeps ``bm25_smoke_report.json``; other collections add their configuration id."""
+    if collection.chunking_config_id == DEFAULT_CHUNKING_CONFIG.config_id:
+        return settings.reports_dir / SMOKE_REPORT_FILENAME
+    return settings.reports_dir / f"bm25_smoke_report.{collection.chunking_config_id}.json"
 
 
 def _relative(path: Path, root: Path) -> str:
@@ -353,7 +371,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=f"Run the smoke queries; write reports/{SMOKE_REPORT_FILENAME}.",
     )
     parser.add_argument("--top-k", type=int, default=None, help="Results to return (default 5).")
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
+        "--collection",
+        choices=COLLECTION_NAMES,
+        default=None,
+        help="Named chunk collection (default: the v1 baseline).",
+    )
+    source.add_argument(
         "--chunks", default=None, help=f"Chunk artifact (default data/processed/{CHUNKS_FILENAME})."
     )
     parser.add_argument("--k1", type=float, default=DEFAULT_BM25_CONFIG.k1)
@@ -369,7 +394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(str(exc))
     try:
         settings = load_settings(args.project_root)
-        collection, chunks_path = _load(settings, args.chunks)
+        collection, chunks_path = _load(settings, args.chunks, args.collection)
         started = time.perf_counter()
         retriever = BM25Retriever(collection.chunks, config)
         build_seconds = time.perf_counter() - started
@@ -380,7 +405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 chunks_path=_relative(chunks_path, settings.project_root),
                 build_seconds=build_seconds,
             )
-            report_path = settings.reports_dir / SMOKE_REPORT_FILENAME
+            report_path = smoke_report_path(settings, collection)
             data = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
             publish_atomic(report_path, data.encode("utf-8"))
             print(

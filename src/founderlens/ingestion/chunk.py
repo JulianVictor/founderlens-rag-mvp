@@ -41,6 +41,26 @@ overlap ``O`` and minimum fill ``F = ceil(S / 2)``:
 Ends strictly increase, so every chunk adds new words and the loop
 terminates. Chunks never cross pages or documents and are exact slices of
 ``normalized_text``. Table candidates are not indexed or appended.
+
+Algorithm version 2 (``ChunkingConfig.token_budget`` set, Commit 3.2) adds a
+hard limit in embedding-model tokens, counted by an injected
+:class:`TokenCounter` (special tokens included, no truncation or padding) on
+the exact chunk text. For each chunk:
+
+a. Try the version-1 end from rule 1 or 2. If it fits, use it, so pages
+   without long chunks are chunked exactly as in version 1.
+b. Otherwise count every candidate end from ``max(s + 1, previous_end + 1)``
+   to ``min(s + S, n)``. Among those that fit, let ``e_max`` be the longest;
+   choose the strongest boundary (then the latest end) among fitting ends at
+   or after ``s + ceil((e_max - s) / 2)``. This is the version-1 rule applied
+   to the token-feasible range: a table row is kept whole when a line break
+   fits, without producing tiny chunks. Every candidate is counted, so no
+   monotonic token count is assumed.
+c. If nothing fits from ``s``, retry from ``s + 1``, ``s + 2``, ... up to
+   ``previous_end`` (less overlap, never a gap). If even the single next word
+   does not fit, the run fails and names the page and character span.
+
+Ends still strictly increase, so termination and coverage are unchanged.
 """
 
 from __future__ import annotations
@@ -48,6 +68,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import statistics
 import sys
@@ -59,7 +80,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from founderlens.config import ConfigError, Settings, load_settings
 from founderlens.corpus.manifest import EXPECTED_DOCUMENT_COUNT, CorpusManifest
@@ -78,6 +99,8 @@ from founderlens.ingestion.tables import TableRecord, TableStatus
 CHUNK_SCHEMA_VERSION = 1
 # Bump whenever the word definition, boundary rule or overlap rule changes.
 CHUNKING_ALGORITHM_VERSION = 1
+# Version 1 plus a hard model-token budget (used when a TokenBudget is set).
+TOKEN_BUDGET_ALGORITHM_VERSION = 2
 CHUNKS_FILENAME = "chunks.jsonl"
 REPORT_FILENAME = "chunking_report.json"
 MANUAL_INSPECTION_REF = "docs/ingestion.md#commit-23-chunk-quality-inspection"
@@ -164,14 +187,71 @@ def classify_gap(gap: str) -> Boundary:
 # --------------------------------------------------------------------------- #
 
 
+class TokenCounter(Protocol):
+    """Counts model tokens; implemented by the embedding encoder (or a test fake)."""
+
+    @property
+    def max_seq_length(self) -> int:
+        """Effective model input limit in tokens, special tokens included."""
+        ...
+
+    def token_lengths(self, texts: Sequence[str]) -> list[int]:
+        """Token counts with special tokens, no truncation and no padding."""
+        ...
+
+
+_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+@dataclass(frozen=True, slots=True)
+class TokenBudget:
+    """Hard per-chunk limit in a specific model's tokens (algorithm version 2)."""
+
+    max_tokens: int
+    model_id: str
+    model_revision: str
+    tokenizer: str
+
+    def __post_init__(self) -> None:
+        if not _is_strict_int(self.max_tokens) or self.max_tokens < 3:
+            raise ChunkingConfigError(
+                f"max_tokens must be an integer >= 3, got {self.max_tokens!r}"
+            )
+        for name in ("model_id", "tokenizer"):
+            value: object = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ChunkingConfigError(f"token budget {name} must be a non-empty string")
+        revision: object = self.model_revision
+        if not isinstance(revision, str) or not _REVISION_RE.fullmatch(revision):
+            raise ChunkingConfigError(
+                "token budget model_revision must be a 40-character commit SHA"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "max_tokens": self.max_tokens,
+            "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "tokenizer": self.tokenizer,
+            "special_tokens": "included",
+            "truncation": "disabled",
+            "padding": "disabled",
+            "counted_text": "exact chunk text",
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class ChunkingConfig:
-    """Window size and overlap in whitespace-delimited words (not model tokens)."""
+    """Window size and overlap in whitespace-delimited words, plus an optional token budget."""
 
     chunk_size_words: int = DEFAULT_CHUNK_SIZE_WORDS
     chunk_overlap_words: int = DEFAULT_CHUNK_OVERLAP_WORDS
+    token_budget: TokenBudget | None = None
 
     def __post_init__(self) -> None:
+        budget: object = self.token_budget
+        if budget is not None and not isinstance(budget, TokenBudget):
+            raise ChunkingConfigError("token_budget must be a TokenBudget or None")
         size, overlap = self.chunk_size_words, self.chunk_overlap_words
         if not _is_strict_int(size) or size < 1:
             raise ChunkingConfigError(f"chunk_size_words must be a positive integer, got {size!r}")
@@ -189,10 +269,22 @@ class ChunkingConfig:
         """Earliest allowed end of a non-final chunk, counted from its start: ceil(S / 2)."""
         return (self.chunk_size_words + 1) // 2
 
+    @property
+    def algorithm_version(self) -> int:
+        return (
+            CHUNKING_ALGORITHM_VERSION
+            if self.token_budget is None
+            else TOKEN_BUDGET_ALGORITHM_VERSION
+        )
+
     def to_dict(self) -> dict[str, Any]:
-        """Every setting that affects chunk content. Hashed into the configuration id."""
-        return {
-            "algorithm_version": CHUNKING_ALGORITHM_VERSION,
+        """Every setting that affects chunk content. Hashed into the configuration id.
+
+        Without a token budget this is exactly the version-1 dictionary, so the
+        version-1 configuration id is unchanged.
+        """
+        settings: dict[str, Any] = {
+            "algorithm_version": self.algorithm_version,
             "chunk_size_words": self.chunk_size_words,
             "chunk_overlap_words": self.chunk_overlap_words,
             "min_fill_words": self.min_fill_words,
@@ -200,6 +292,9 @@ class ChunkingConfig:
             "source_field": "normalized_text",
             "table_candidates_indexed": False,
         }
+        if self.token_budget is not None:
+            settings["token_budget"] = self.token_budget.to_dict()
+        return settings
 
     @property
     def config_sha256(self) -> str:
@@ -228,10 +323,31 @@ class Window:
     end_word: int
     start_char: int
     end_char: int
+    token_limited: bool = False  # version 2 chose a different start or end than version 1
 
 
-def plan_windows(text: str, config: ChunkingConfig) -> list[Window]:
+def check_counter(config: ChunkingConfig, counter: TokenCounter | None) -> None:
+    """A token budget needs a counter for the same model limit; version 1 needs none."""
+    budget = config.token_budget
+    if budget is None:
+        return
+    if counter is None:
+        raise ChunkingConfigError("a token budget requires a token counter (the model tokenizer)")
+    if counter.max_seq_length != budget.max_tokens:
+        raise ChunkingConfigError(
+            f"token counter limit {counter.max_seq_length} != token budget {budget.max_tokens}"
+        )
+
+
+def plan_windows(
+    text: str,
+    config: ChunkingConfig,
+    counter: TokenCounter | None = None,
+    *,
+    label: str = "text",
+) -> list[Window]:
     """Apply the window rule from the module docstring to one page's text."""
+    check_counter(config, counter)
     spans = word_spans(text)
     n = len(spans)
     if n == 0:
@@ -241,15 +357,64 @@ def plan_windows(text: str, config: ChunkingConfig) -> list[Window]:
     bounds = [Boundary.PARAGRAPH] + [
         classify_gap(text[spans[i - 1][1] : spans[i][0]]) for i in range(1, n)
     ]
+
+    def preferred_end(start: int, previous_end: int) -> int:
+        if n - start <= size:
+            return n
+        low = max(start + config.min_fill_words, previous_end + 1)
+        return max(range(low, start + size + 1), key=lambda e: (bounds[e], e))
+
+    max_tokens = config.token_budget.max_tokens if config.token_budget is not None else 0
+
+    def fitting(start: int, ends: Sequence[int]) -> list[bool]:
+        if counter is None:  # unreachable: check_counter() enforces it
+            raise ChunkingConfigError("a token budget requires a token counter")
+        texts = [text[spans[start][0] : spans[e - 1][1]] for e in ends]
+        lengths = counter.token_lengths(texts)
+        if len(lengths) != len(texts):
+            raise ChunkingError([f"{label}: token counter returned the wrong number of lengths"])
+        return [length <= max_tokens for length in lengths]
+
+    def budgeted(start: int, previous_end: int) -> tuple[int, int, bool]:
+        for first in range(start, max(start, previous_end) + 1):
+            last = min(first + size, n)
+            progress = max(first + 1, previous_end + 1)
+            if progress > last:
+                continue
+            if first == start:
+                default = preferred_end(first, previous_end)
+                if fitting(first, [default])[0]:
+                    return first, default, False
+            candidates = list(range(progress, last + 1))
+            fits = [e for e, ok in zip(candidates, fitting(first, candidates), strict=True) if ok]
+            if not fits:
+                continue
+            # Minimum fill relative to the longest window that fits, then the strongest
+            # boundary, then the latest end (the version-1 rule applied to what fits).
+            low = first + math.ceil((max(fits) - first) / 2)
+            end = max(
+                (e for e in fits if e >= low),
+                key=lambda e: (bounds[e] if e < n else Boundary.PARAGRAPH, e),
+            )
+            return first, end, True
+        word_start, word_end = spans[previous_end]
+        raise ChunkingError(
+            [
+                f"{label}: the word at characters [{word_start}, {word_end}) does not fit the "
+                f"{max_tokens}-token budget even on its own; it cannot be chunked without "
+                "truncation"
+            ]
+        )
+
     windows: list[Window] = []
     start, previous_end = 0, 0
     while True:
-        if n - start <= size:
-            end = n
+        limited = False
+        if config.token_budget is None:
+            end = preferred_end(start, previous_end)
         else:
-            low = max(start + config.min_fill_words, previous_end + 1)
-            end = max(range(low, start + size + 1), key=lambda e: (bounds[e], e))
-        windows.append(Window(start, end, spans[start][0], spans[end - 1][1]))
+            start, end, limited = budgeted(start, previous_end)
+        windows.append(Window(start, end, spans[start][0], spans[end - 1][1], limited))
         if end == n:
             return windows
         earliest = max(end - overlap, start + 1)
@@ -437,13 +602,23 @@ def parse_chunks_jsonl(text: str) -> list[ChunkRecord]:
     return records
 
 
-def chunk_page(page: NormalizedPageRecord, config: ChunkingConfig) -> tuple[ChunkRecord, ...]:
+def chunk_page(
+    page: NormalizedPageRecord, config: ChunkingConfig, counter: TokenCounter | None = None
+) -> tuple[ChunkRecord, ...]:
     """Chunks of one page's ``normalized_text``. Empty pages yield none."""
+    return chunk_page_windows(page, config, counter)[0]
+
+
+def chunk_page_windows(
+    page: NormalizedPageRecord, config: ChunkingConfig, counter: TokenCounter | None = None
+) -> tuple[tuple[ChunkRecord, ...], tuple[Window, ...]]:
+    """Chunks of one page plus the windows they came from (for diagnostics)."""
     text = page.normalized_text
     summary = TableStatusSummary.of(page.tables)
     codes = tuple(w.code for w in page.normalization_warnings)
     chunks = []
-    for index, window in enumerate(plan_windows(text, config)):
+    windows = tuple(plan_windows(text, config, counter, label=page.page_id))
+    for index, window in enumerate(windows):
         chunk_text = text[window.start_char : window.end_char]
         chunks.append(
             ChunkRecord(
@@ -466,7 +641,7 @@ def chunk_page(page: NormalizedPageRecord, config: ChunkingConfig) -> tuple[Chun
                 page_normalization_warning_codes=codes,
             )
         )
-    return tuple(chunks)
+    return tuple(chunks), windows
 
 
 # --------------------------------------------------------------------------- #
@@ -560,13 +735,32 @@ def _check_page(
     return problems
 
 
+def token_budget_problems(
+    chunks: Sequence[ChunkRecord], config: ChunkingConfig, counter: TokenCounter | None
+) -> list[str]:
+    """Every chunk independently re-counted against the token budget (version 2 only)."""
+    if config.token_budget is None:
+        return []
+    check_counter(config, counter)
+    if counter is None or not chunks:
+        return []
+    lengths = counter.token_lengths([c.text for c in chunks])
+    limit = config.token_budget.max_tokens
+    return [
+        f"{c.chunk_id}: {n} tokens exceed the {limit}-token budget"
+        for c, n in zip(chunks, lengths, strict=True)
+        if n > limit
+    ]
+
+
 def validate_chunks(
     chunks: Sequence[ChunkRecord],
     pages: Sequence[NormalizedPageRecord],
     config: ChunkingConfig,
+    counter: TokenCounter | None = None,
 ) -> list[str]:
-    """Whole-collection checks: identity, order, exact spans, budget, overlap, coverage."""
-    problems: list[str] = []
+    """Whole-collection checks: identity, order, exact spans, budgets, overlap, coverage."""
+    problems: list[str] = token_budget_problems(chunks, config, counter)
     ids = [c.chunk_id for c in chunks]
     if len(set(ids)) != len(ids):
         problems.append("duplicate chunk_id in the chunk collection")
@@ -599,6 +793,8 @@ class CorpusChunking:
     chunks: tuple[ChunkRecord, ...]
     config: ChunkingConfig
     duration_seconds: float
+    token_limited_chunk_ids: tuple[str, ...] = ()
+    counter: TokenCounter | None = field(default=None, repr=False, compare=False)
 
 
 def load_normalized_artifact(
@@ -634,8 +830,13 @@ def chunk_corpus(
     *,
     config: ChunkingConfig = DEFAULT_CHUNKING_CONFIG,
     expected_document_count: int = EXPECTED_DOCUMENT_COUNT,
+    counter: TokenCounter | None = None,
 ) -> CorpusChunking:
     """Validate inputs, then chunk every page and validate the collection. Writes nothing."""
+    try:
+        check_counter(config, counter)
+    except ChunkingConfigError as exc:
+        raise ChunkingError([str(exc)]) from exc
     report = validate_corpus(manifest_path, raw_dir, expected_count=expected_document_count)
     if not report.ok or report.manifest is None:
         raise ChunkingError(
@@ -645,11 +846,18 @@ def chunk_corpus(
     manifest = report.manifest
     pages, normalized_sha256 = load_normalized_artifact(normalized_path, manifest)
     started = time.perf_counter()
+    chunks: list[ChunkRecord] = []
+    limited: list[str] = []
     try:
-        chunks = [chunk for page in pages for chunk in chunk_page(page, config)]
+        for page in pages:
+            page_chunks, windows = chunk_page_windows(page, config, counter)
+            chunks.extend(page_chunks)
+            limited.extend(
+                c.chunk_id for c, w in zip(page_chunks, windows, strict=True) if w.token_limited
+            )
     except ChunkRecordError as exc:
         raise ChunkingError([f"invalid chunk: {exc}"]) from exc
-    problems = validate_chunks(chunks, pages, config)
+    problems = validate_chunks(chunks, pages, config, counter)
     duration = time.perf_counter() - started
     if problems:
         raise ChunkingError(problems)
@@ -661,6 +869,8 @@ def chunk_corpus(
         chunks=tuple(chunks),
         config=config,
         duration_seconds=duration,
+        token_limited_chunk_ids=tuple(limited),
+        counter=counter,
     )
 
 
@@ -678,7 +888,7 @@ def write_chunks_artifact(result: CorpusChunking, dest: Path) -> tuple[str, int]
             parsed = parse_chunks_jsonl(reread.decode("utf-8"))
         except (UnicodeDecodeError, ChunkRecordError) as exc:
             raise ChunkingError([f"written artifact does not parse: {exc}"]) from exc
-        problems = validate_chunks(parsed, result.pages, result.config)
+        problems = validate_chunks(parsed, result.pages, result.config, result.counter)
         if reread != data or parsed != list(result.chunks):
             problems.append("written artifact differs from the chunk records")
         if problems:
@@ -877,6 +1087,7 @@ def build_report(
                 "text only. Page-level table status says nothing about which chunk holds a table.",
                 "pages_with_uncertain_or_fallback_tables": table_pages,
             },
+            **_token_budget_diagnostics(result),
         },
         "manual_inspection": {
             "documented_in": MANUAL_INSPECTION_REF,
@@ -887,6 +1098,26 @@ def build_report(
             "note": "Varies between runs; not part of the deterministic artifact.",
             "chunking_duration_seconds": round(result.duration_seconds, 3),
         },
+    }
+
+
+def _token_budget_diagnostics(result: CorpusChunking) -> dict[str, Any]:
+    budget, counter = result.config.token_budget, result.counter
+    if budget is None or counter is None:
+        return {}
+    lengths = counter.token_lengths([c.text for c in result.chunks]) if result.chunks else []
+    return {
+        "token_budget": {
+            "max_tokens": budget.max_tokens,
+            "chunk_token_count": _distribution(lengths),
+            "over_budget": sum(1 for n in lengths if n > budget.max_tokens),
+            "token_limited_chunks": {
+                "definition": "chunks whose start or end differs from the version-1 choice "
+                "because the version-1 window exceeded the token budget",
+                "count": len(result.token_limited_chunk_ids),
+                "chunk_ids": list(result.token_limited_chunk_ids),
+            },
+        }
     }
 
 
@@ -915,10 +1146,22 @@ def run_chunking(
     output: str | Path | None = None,
     report_output: str | Path | None = None,
     expected_document_count: int = EXPECTED_DOCUMENT_COUNT,
+    counter: TokenCounter | None = None,
 ) -> ChunkingOutcome:
     chunks_path = resolve_output(settings, output, settings.processed_data_dir / CHUNKS_FILENAME)
     report_path = resolve_output(settings, report_output, settings.reports_dir / REPORT_FILENAME)
     problems = output_path_problems(settings, chunks_path, report_path)
+    if config.token_budget is not None:
+        # The version-1 baseline collection and report are frozen; never overwrite them.
+        for path, default in (
+            (chunks_path, settings.processed_data_dir / CHUNKS_FILENAME),
+            (report_path, settings.reports_dir / REPORT_FILENAME),
+        ):
+            if path == default.resolve():
+                problems.append(
+                    f"{path.name} is the version-1 baseline; write token-budgeted "
+                    "collections to their own --output and --report-output"
+                )
     if problems:
         raise ChunkingError(problems)
     normalized_path = settings.processed_data_dir / PAGES_NORMALIZED_FILENAME
@@ -928,6 +1171,7 @@ def run_chunking(
         normalized_path,
         config=config,
         expected_document_count=expected_document_count,
+        counter=counter,
     )
     sha256, size = write_chunks_artifact(result, chunks_path)
     root = settings.project_root.resolve()
