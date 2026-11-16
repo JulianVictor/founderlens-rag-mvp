@@ -49,6 +49,7 @@ from founderlens.corpus.validate import validate_corpus
 from founderlens.ingestion.schema import (
     PAGE_SCHEMA_VERSION,
     ExtractionStatus,
+    PageIdentity,
     PageRecord,
     PageRecordError,
     parse_pages_jsonl,
@@ -329,7 +330,7 @@ def _extract_page(
         raise ExtractionError([f"{where}: invalid page record: {exc}"]) from exc
 
 
-def validate_records(records: Sequence[PageRecord], manifest: CorpusManifest) -> list[str]:
+def validate_records(records: Sequence[PageIdentity], manifest: CorpusManifest) -> list[str]:
     """Check records against the manifest: complete, ordered, unique, correct metadata."""
     problems: list[str] = []
     expected_total = sum(d.page_count for d in manifest.documents)

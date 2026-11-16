@@ -12,7 +12,7 @@ import json
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Protocol
 
 # Bump when the persisted record fields or their meaning change.
 PAGE_SCHEMA_VERSION = 1
@@ -48,6 +48,25 @@ class ExtractionStatus(StrEnum):
 
     OK = "ok"
     EMPTY = "empty"
+
+
+class PageIdentity(Protocol):
+    """Page identity and source metadata shared by raw and normalized page records."""
+
+    @property
+    def document_id(self) -> str: ...
+    @property
+    def document_sha256(self) -> str: ...
+    @property
+    def company(self) -> str: ...
+    @property
+    def fiscal_period(self) -> str: ...
+    @property
+    def source_url(self) -> str: ...
+    @property
+    def page_number(self) -> int: ...
+    @property
+    def page_id(self) -> str: ...
 
 
 def make_page_id(document_id: str, page_number: int) -> str:

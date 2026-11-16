@@ -54,13 +54,22 @@ only when its acceptance criteria are met and verified by the quality gates.
   word-coordinate table candidates (`structured` / `uncertain` / `fallback`)
   in `data/processed/pages.normalized.jsonl`, with a normalization report.
   *(implemented)*
-- Later: configurable chunking (size, overlap) that keeps the document ID
-  and page range per chunk; processed output in `data/processed/`.
-  *(planned)*
+- Commit 2.3: configurable, page-aware word-window chunking (default 120
+  words, 24 overlap) of `normalized_text` into
+  `data/processed/chunks.jsonl`. Each chunk carries exact source offsets,
+  stable IDs and a configuration ID, and the run writes a chunking report.
+  *(implemented)*
 
 **Acceptance criteria.** Ingestion is deterministic (same input → identical
 chunks); every chunk traces to a document and page(s); tests use synthetic
-PDFs/fixtures only.
+PDFs/fixtures only. *(met locally: repeated runs give byte-identical
+artifacts, each chunk maps to exactly one page by offsets, and ordinary tests
+use synthetic PDFs; remote CI not verified)*
+
+**Carried into Stage 3.** Measure real token lengths with the selected
+embedding model's tokenizer before embedding, and revise the chunk
+configuration on dev data only if any chunk exceeds the model limit (see
+[ingestion.md](ingestion.md#words-versus-embedding-model-tokens)).
 
 ## Stage 3 — Retrieval & Vector Search
 

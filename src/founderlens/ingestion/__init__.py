@@ -1,5 +1,6 @@
-"""Document ingestion: page-aware extraction from the verified corpus (Stage 2).
+"""Document ingestion from the verified corpus (Stage 2).
 
-Commit 2.1 implements raw page-level extraction only. Normalization and
-chunking are later commits.
+``extract`` (Commit 2.1) writes raw page text, ``normalize`` (Commit 2.2)
+writes normalized text plus table candidates, and ``chunk`` (Commit 2.3)
+writes page-aware retrieval chunks.
 """

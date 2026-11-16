@@ -6,12 +6,13 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 2 in progress (Commits 2.1–2.2).** Stage 1 is
+> **Current status: Stage 2 implemented (Commits 2.1–2.3).** Stage 1 is
 > complete: the project foundation, a verified four-document corpus and a
 > human-reviewed, frozen evaluation dataset. Raw page-level PDF extraction,
-> conservative text normalization and word-coordinate table candidates are
-> implemented. Chunking, retrieval, generation, evaluation runs, the demo UI
-> and deployment are **not implemented yet**. See [Implementation status](#implementation-status).
+> conservative text normalization, word-coordinate table candidates and
+> page-aware chunking are implemented. Retrieval, embeddings, generation,
+> evaluation runs, the demo UI and deployment are **not implemented yet**.
+> See [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
 application.
@@ -92,6 +93,8 @@ python -m founderlens.evaluation.validate
 python -m founderlens.ingestion.extract
 # Normalize text and detect table candidates (pages.normalized.jsonl, git-ignored)
 python -m founderlens.ingestion.normalize
+# Split normalized pages into retrieval chunks (chunks.jsonl, git-ignored)
+python -m founderlens.ingestion.chunk
 ```
 
 If the automated download fails, follow the manual steps in
@@ -187,7 +190,24 @@ real-corpus checks: CI never downloads the financial PDFs.
   - "Structured" means the automatic checks passed, not that the
     associations are verified.
 
-**Not implemented:** chunking, retrieval, vector
+**Implemented (Commit 2.3), see [docs/ingestion.md](docs/ingestion.md#commit-23-page-aware-chunking):**
+- Page-aware word-window chunking of `normalized_text`:
+  - default 120 words with up to 24 words of overlap, configurable with
+    `--chunk-size-words` and `--chunk-overlap-words`;
+  - boundaries prefer paragraph breaks, then line breaks, then word
+    boundaries.
+  - These are whitespace words, not model tokens.
+- Every chunk is an exact source slice:
+  - text equals `normalized_text[start_char:end_char]`;
+  - chunks never cross pages;
+  - IDs are stable (`{page_id}:c{index:04d}:{config_id}`).
+- Table candidates are not indexed separately.
+- `data/processed/chunks.jsonl` and `reports/chunking_report.json`.
+  - On corpus v1.0.0 the default configuration gives 162 chunks, validated
+    for full source coverage and overlap limits.
+  - No retrieval quality is claimed.
+
+**Not implemented:** retrieval, embeddings, vector
 indexing, generation, citations, abstention, the evaluation harness and judge,
 the Streamlit demo, deployment. No evaluation results exist yet.
 

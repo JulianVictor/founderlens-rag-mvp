@@ -1,12 +1,12 @@
 # Architecture
 
-> **Status:** Stage 1 complete; Stage 2 Commits 2.1–2.2 implemented. Implemented:
+> **Status:** Stage 1 complete; Stage 2 (Commits 2.1–2.3) implemented. Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
 > - `founderlens.evaluation` (dataset schema and validation);
 > - `founderlens.ingestion` (raw page-level extraction, normalization, table
->   candidates). Everything else below is the **planned** design and
-> may change as evaluation results come in.
+>   candidates, page-aware chunking). Everything else below is the
+>   **planned** design and may change as evaluation results come in.
 
 ## Overview
 
@@ -77,8 +77,22 @@ flowchart LR
      `fallback`;
    - writes `data/processed/pages.normalized.jsonl`, keeping the text and
      the table view as separate fields.
-4. **Chunking.** Configurable size and overlap; each chunk records its
-   document and page span so citations can be checked.
+4. **Chunking** *(implemented in Commit 2.3;
+   [ingestion.md](ingestion.md#commit-23-page-aware-chunking))*.
+   `founderlens.ingestion.chunk`:
+   - validates the corpus and the normalized artifact against the manifest,
+     with no PDF re-extraction;
+   - splits each page's `normalized_text` into word windows. Size and overlap
+     are configurable (default 120/24 whitespace words), and boundaries
+     prefer paragraph, then line, then word breaks;
+   - writes `data/processed/chunks.jsonl`. Each chunk is an exact
+     `[start_char, end_char)` slice of one page, with a stable ID and a
+     configuration ID;
+   - validates coverage and overlap, and writes
+     `reports/chunking_report.json`.
+
+   Table candidates are not indexed. BM25 and dense retrieval share this one
+   collection.
 5. **Persisted output** in `data/processed/`, regenerable from raw inputs.
 
 ## Online question-answering pipeline (Stages 3–5)
@@ -160,7 +174,7 @@ pass.
 | `config` *(implemented)* | Project root and path resolution | stdlib |
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
 | `evaluation` *(schema and validation implemented)* | Dataset schema and validation; metrics, runner and judge planned | config, corpus manifest |
-| `ingestion` *(extraction, normalization implemented)* | Extract (done), normalize and table candidates (done), chunk | config, corpus, PyMuPDF |
+| `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` | BM25, dense, FAISS index | config, chunks |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
@@ -176,9 +190,9 @@ Modules are created only in the stage that needs them.
 | `data/manifest.json` | Corpus definition (v1.0.0) | Yes |
 | `evaluation/` | Questions, metadata and hashes | Yes |
 | `data/raw/` | Downloaded PDFs | No |
-| `data/processed/` | `pages.raw.jsonl` (raw page text), `pages.normalized.jsonl` (normalized text + table candidates); later chunks | No |
+| `data/processed/` | `pages.raw.jsonl` (raw page text), `pages.normalized.jsonl` (normalized text + table candidates), `chunks.jsonl` (retrieval chunks) | No |
 | `artifacts/` | Indexes, embeddings | No |
-| `reports/` | Extraction and normalization reports, evaluation outputs | No (summaries copied to docs when verified) |
+| `reports/` | Extraction, normalization and chunking reports, evaluation outputs | No (summaries copied to docs when verified) |
 
 ## Design decisions and trade-offs
 

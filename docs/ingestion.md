@@ -1,4 +1,4 @@
-# Ingestion: page-aware extraction and normalization
+# Ingestion: extraction, normalization and chunking
 
 > **Scope.**
 > - **Commit 2.1** turns the four verified corpus PDFs into raw, page-level
@@ -6,8 +6,10 @@
 > - **Commit 2.2** adds conservative text normalization and word-coordinate
 >   table candidates; see
 >   [Commit 2.2](#commit-22-layout-aware-normalization).
+> - **Commit 2.3** splits normalized page text into page-aware, overlapping
+>   word windows; see [Commit 2.3](#commit-23-page-aware-chunking).
 >
-> Neither commit chunks or indexes text (see
+> Nothing is indexed or embedded yet (see
 > [Remaining ingestion work](#remaining-ingestion-work)).
 
 ## Running it
@@ -16,6 +18,7 @@
 python -m founderlens.corpus.download     # once, if data/raw is empty
 python -m founderlens.ingestion.extract
 python -m founderlens.ingestion.normalize # Commit 2.2; needs the raw artifact
+python -m founderlens.ingestion.chunk     # Commit 2.3; needs the normalized artifact
 ```
 
 The command:
@@ -367,14 +370,259 @@ footnote markers in labels (`Operating margin(2)`, `(A)`).
 - NVIDIA Q4 summary tables (page 1) are `fallback` because of wrapped cells.
 - Spanning header column ranges are positional, even in `structured` tables.
 
+## Commit 2.3: page-aware chunking
+
+`python -m founderlens.ingestion.chunk` (`founderlens.ingestion.chunk`) turns
+`pages.normalized.jsonl` into `data/processed/chunks.jsonl`. BM25 and dense
+retrieval (Stage 3) will both use this one collection.
+
+### Running it
+
+```powershell
+python -m founderlens.ingestion.chunk
+python -m founderlens.ingestion.chunk --chunk-size-words 160 --chunk-overlap-words 32 `
+    --output data/processed/chunks.160w32o.jsonl --report-output reports/chunking.160w32o.json
+```
+
+The command:
+1. validates the corpus;
+2. loads the normalized artifact and checks it against the manifest
+   (count, order, page identity, `document_sha256`, metadata);
+3. chunks every page;
+4. validates the whole collection;
+5. publishes the chunk artifact atomically;
+6. writes the report;
+7. prints a summary without page text.
+
+It does not re-extract PDF text, and it never modifies the normalized
+artifact.
+
+**Paths and exit codes.**
+- Relative `--output` and `--report-output` paths are resolved against the
+  project root.
+- The command refuses paths outside the project or inside `data/raw/` or
+  `evaluation/`. It also refuses the manifest, the raw and normalized
+  artifacts, the extraction and normalization reports, wrong suffixes, and
+  identical output and report paths.
+- Invalid parameters exit `2`. Run failures exit `1`, and any previous chunk
+  artifact is kept.
+
+| Output | Path | Git |
+|--------|------|-----|
+| Chunk records (deterministic) | `data/processed/chunks.jsonl` (or `--output`) | ignored |
+| Report (includes run timing) | `reports/chunking_report.json` (or `--report-output`) | ignored |
+
+### Configuration
+
+| Parameter | Default | Rule |
+|-----------|--------:|------|
+| `chunk_size_words` | 120 | positive integer; maximum words per chunk |
+| `chunk_overlap_words` | 24 | non-negative integer, smaller than the size; maximum words shared by consecutive chunks |
+
+These are initial engineering parameters, not tuned values. Any tuning must
+use the dev split only.
+
+**Words, not tokens.** A **word** is a maximal run of non-whitespace
+characters: Python's Unicode-aware regex `\S+`, which uses the same
+whitespace as `str.isspace`. For example, `Revenue was $39,331 million.` is
+four words. Punctuation stays inside words, and financial expressions such as
+`$39,331`, `(1,234)` or `12.5%` are never split. The same definition is used
+for chunking, validation, overlap and report statistics.
+
+**Configuration ID.**
+- `config_sha256` is the SHA-256 of the canonical JSON of every setting that
+  affects chunk content: algorithm version, size, overlap, derived minimum
+  fill, word definition, source field and the table policy.
+- `config_id` is the first 12 hex characters of that hash. The default is
+  `a8a0288e0348`.
+- No timestamp, path or Python `hash()` is involved.
+
+### Algorithm (version 1)
+
+Each page is processed separately. Chunks never span pages or documents.
+
+**Boundaries.** The whitespace gap before each word sets its boundary type:
+- **paragraph**: two or more line feeds;
+- **line**: one line feed;
+- **word**: no line feed.
+
+**Window rule.** For size `S`, overlap `O` and minimum fill `F = ceil(S/2)`:
+1. If at most `S` words remain from the start `s`, the chunk takes them all.
+   This is the page's final chunk.
+2. Otherwise the chunk ends at the candidate end in
+   `[max(s + F, previous end + 1), s + S]` with the strongest boundary
+   (paragraph > line > word). Ties go to the latest end.
+
+   In practice, a chunk ends at the latest paragraph break in the second half
+   of its budget, else the latest line break there, else exactly at `S` words.
+   Only the last case splits a physical line, and it is reported as a forced
+   line split.
+3. The next chunk starts at the earliest physical-line start in
+   `[max(end − O, s + 1), end − 1]`, or at `max(end − O, s + 1)` (mid-line)
+   when there is no line start in that range.
+
+**Guarantees.**
+- Overlap never exceeds `O`, and it is smaller when starting at a line
+  boundary requires it.
+- Chunk ends strictly increase, so every chunk adds new source words, there
+  are no duplicate-only chunks, and the loop always terminates (including
+  `O = 0` and `O = S − 1`).
+- The minimum fill stops a nearby paragraph break from producing a tiny
+  chunk.
+- Only a page's final chunk can be shorter than `F`. It still includes the
+  overlap words.
+
+Chunk text is the exact slice of `normalized_text` from the first word's
+start to the last word's end. Internal spaces and line feeds, including
+column padding, are kept unchanged.
+
+### Chunk record (schema version 1)
+
+| Field | Meaning |
+|-------|---------|
+| `chunk_id` | `{page_id}:c{chunk_index:04d}:{config_id}`, e.g. `goog-2024-q3:p0009:c0002:a8a0288e0348` |
+| `document_id`, `document_sha256`, `company`, `fiscal_period`, `source_url` | Copied from the page and checked against the manifest |
+| `page_id`, `page_number` | One-based physical PDF page |
+| `chunk_index` | Zero-based position within the page |
+| `text` | Exactly `normalized_text[start_char:end_char]` |
+| `start_char`, `end_char` | Python string (code point) offsets, start inclusive, end exclusive; not UTF-8 byte offsets |
+| `character_count`, `word_count` | `len(text)` (= `end_char − start_char`) and the word count above |
+| `chunking_config_id` | Configuration ID |
+| `page_table_status_summary` | **Page-level** counts of structured, uncertain and fallback table candidates. It does not say that this chunk contains a table. |
+| `page_normalization_warning_codes` | **Page-level** normalization warning codes |
+
+**What a chunk ID does and doesn't prove.**
+- An ID is stable while the normalized page text, the algorithm and the
+  configuration are unchanged.
+- A different configuration gives different IDs.
+- An ordinal ID does not by itself prove source-content identity. Use the
+  document hashes, the normalized artifact hash, the configuration ID and the
+  chunk artifact hash for provenance. All four are in the report.
+
+**Record checks.** Each record validates its own fields on construction:
+non-whitespace text, offsets, counts, page identity and ID format.
+
+**Collection checks (`validate_chunks`).** These run before publication and
+again on the written file:
+- unique IDs, page order and sequential indices;
+- exact source spans aligned to word boundaries;
+- metadata matching the source page;
+- the word budget;
+- strictly advancing chunks;
+- overlap within `O`;
+- no uncovered words between consecutive chunks, and every non-whitespace
+  character of each page inside some chunk;
+- no chunks for empty pages, and at least one for every other page.
+
+**Overlap measurement.** Overlap is the number of source word *positions*
+shared by consecutive chunks of one page. The same number appearing at two
+places in the page is not overlap. Repeated word occurrences are the sum of
+these overlaps, so emitted words = source words + repeated occurrences.
+
+### Financial tables
+
+There is one baseline strategy: **normalized page text only.**
+- Table candidates are not appended, indexed separately or removed from the
+  text, so nothing is duplicated.
+- Line-boundary preference keeps most visible rows on one physical line
+  together, but a physical line is not a semantic table row. Wrapped labels,
+  labels printed below their values and cells spanning several lines (see
+  the [Commit 2.2 limitations](#known-unresolved-layouts)) are not repaired.
+- No headers are inferred and no cross-page tables are rebuilt.
+- Table quality is exposed only as page-level metadata.
+
+### Results on corpus v1.0.0 (default configuration)
+
+From `python -m founderlens.ingestion.chunk` on the 40 pages:
+
+| Document | Chunks |
+|----------|-------:|
+| goog-2024-q3 | 40 |
+| goog-2024-q4 | 43 |
+| nvda-fy2025-q3 | 38 |
+| nvda-fy2025-q4 | 41 |
+| **Total** | **162** |
+
+| Measure | Value |
+|---------|-------|
+| Empty pages | 0 |
+| Chunks per page | 1–8 (2 single-chunk pages) |
+| Words per chunk | min 26, median 109, mean 99.79, max 120 |
+| Characters per chunk | min 221, median 854, mean 1,010.2, max 2,396 |
+| Source words / emitted words | 13,946 / 16,166 |
+| Overlap per consecutive pair (122 pairs) | min 4, mean 18.2, max 24 words; 2,220 repeated word occurrences |
+| Chunk end boundaries | 83 paragraph, 39 line, 0 forced mid-line; 40 page ends |
+| Mid-line chunk starts | 0 |
+| Physical lines over 120 words | 0 (longest: 27 words, nvda-fy2025-q4 p1) |
+| Chunks under 60 words | 14, all final chunks of their page (26–59 words, overlap included) |
+| Uncovered non-whitespace characters | 0 |
+| Pages with uncertain or fallback tables | 22 |
+
+Chunk artifact SHA-256:
+`1ccad2ad4c59bea7c66ef89f97ab20cc44a2bfb59505f43296aaad3856ac50c3`. It was
+identical across repeated runs. These numbers describe the chunk collection
+only; they say nothing about retrieval quality.
+
+### Commit 2.3 chunk quality inspection
+
+I inspected boundaries, overlaps and offsets on pages chosen by layout type:
+- goog-2024-q3 p1 (narrative and highlights);
+- goog-2024-q3 p9 (uncertain FX tables);
+- goog-2024-q4 p4 (dense balance sheet);
+- nvda-fy2025-q3 p8 (uncertain tables with interleaved headers);
+- nvda-fy2025-q4 p1 (narrative plus fallback summary tables, and the longest
+  line).
+
+This is an implementer-performed inspection, not an independent review.
+
+**What works.**
+- Every inspected chunk equals its source slice.
+- Narrative chunks end at paragraph breaks.
+- Dollar signs, thousands separators, parenthesised negatives and
+  percentages stay intact, and column padding is kept.
+- Overlap usually carries the preceding heading or period header into the
+  next chunk. On goog-2024-q3 p9, `Quarter Ended September 30, 2024` ends
+  chunk 1 and is repeated at the start of chunk 2.
+- On nvda-fy2025-q3 p8, the year header row `2024 2024 2023 2024 2023` ends
+  chunk 1 and opens chunk 2 through the overlap.
+
+**Limitations.**
+- A heading can end a chunk while its body starts the next one, and it is
+  only repeated when it falls inside the overlap. For example, `Q3 2024
+  Financial Highlights (unaudited)` ends goog-2024-q3 p1 chunk 2.
+- A page-final heading belongs to the next page's content, but chunks never
+  cross pages, so it stays with the wrong page. Example: `Fiscal 2025
+  Summary` at the end of nvda-fy2025-q4 p1.
+- Period headers and units sit only in the chunk where the table starts.
+  Later chunks of a long table rely on overlap and may lose them. Continued
+  tables on later pages have none, as in Commit 2.2.
+- Layout padding makes table chunks long in characters (up to 2,396) without
+  adding words.
+- Final chunks can be short: the smallest is nvda-fy2025-q4 p7 chunk 3, with
+  26 words.
+
+### Words versus embedding-model tokens
+
+Chunk budgets count whitespace words, not model tokens:
+- Financial expressions such as `$39,331`, `(1,234)`, `12.5%` and `FY2025`
+  usually become several subword tokens.
+- Embedding models have a maximum input length, and prefixes and special
+  tokens use part of it.
+- Silent truncation is not allowed.
+
+**Stage 3 must:**
+1. load the selected Sentence Transformer's tokenizer and read its effective
+   `max_seq_length`;
+2. measure the real token length of every chunk;
+3. if any chunk exceeds the limit, revise the chunk configuration using dev
+   data only, or document an explicit strategy.
+
+BM25 and dense retrieval must use the same final chunk collection, with no
+hidden dense-only truncation.
+
 ## Remaining ingestion work
 
-- **Commit 2.3, chunking:** build retrieval chunks from `normalized_text`
-  and the table view without duplicating content, since
-  `table_text_overlap` marks pages where both carry the same values.
-  - Keep document and page provenance.
-  - Use only `structured` tables as row-level evidence, if at all; treat
-    `uncertain` and `fallback` regions as plain text.
-  - Do not split table rows across chunks.
-
-Retrieval, generation and evaluation are not implemented.
+Stage 2 ingestion is implemented. Indexing (BM25, embeddings, FAISS),
+retrieval, generation and evaluation are Stage 3 and later, and are not
+implemented. Open table limitations are listed under
+[Known unresolved layouts](#known-unresolved-layouts).
