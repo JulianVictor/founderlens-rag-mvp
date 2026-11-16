@@ -75,9 +75,18 @@ configuration on dev data only if any chunk exceeds the model limit (see
 
 **Goal.** Measurable keyword and semantic retrieval.
 
-**Deliverables.** BM25 baseline; dense retrieval with Sentence Transformers
-embeddings in a FAISS CPU index persisted to `artifacts/`; a common retrieval
-result type (chunk, score, citation metadata); optional hybrid fusion.
+**Deliverables.**
+- Commit 3.1: BM25 lexical baseline (`rank-bm25` BM25Okapi, in-memory
+  index) with a versioned shared tokenizer, a common retrieval result type
+  (chunk, raw score, provenance), a query CLI and a smoke report
+  ([architecture.md](architecture.md#bm25-lexical-baseline-implemented-in-commit-31)).
+  *(implemented; no retrieval metrics yet)*
+- Dense retrieval with Sentence Transformers embeddings in a FAISS CPU index
+  persisted to `artifacts/`, after measuring real model-token lengths of the
+  chunks. *(planned, Commit 3.2)*
+- Optional hybrid fusion. *(planned)*
+- Development-split benchmark of BM25 and dense on the same chunk collection.
+  *(planned, Commit 3.4)*
 
 **Acceptance criteria.** Index build is reproducible from processed chunks;
 retrieval metrics (see evaluation protocol) are reported for BM25 and dense

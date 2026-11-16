@@ -17,6 +17,12 @@ dependencies = [
     # in onnxruntime/numpy/networkx, which this project does not need.
     # License: AGPL-3.0 or Artifex commercial — see README.
     "pymupdf==1.28.2",
+    # BM25Okapi lexical retrieval baseline (Commit 3.1). Pure Python; its only
+    # dependency is NumPy (unpinned upstream). License: Apache-2.0.
+    "rank-bm25==0.2.2",
+    # Required by rank-bm25 for score arrays; pinned here because rank-bm25
+    # does not pin it. Has cp312 Windows wheels. License: BSD-3-Clause.
+    "numpy==2.5.4",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

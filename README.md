@@ -6,13 +6,13 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 2 implemented (Commits 2.1–2.3).** Stage 1 is
-> complete: the project foundation, a verified four-document corpus and a
-> human-reviewed, frozen evaluation dataset. Raw page-level PDF extraction,
-> conservative text normalization, word-coordinate table candidates and
-> page-aware chunking are implemented. Retrieval, embeddings, generation,
-> evaluation runs, the demo UI and deployment are **not implemented yet**.
-> See [Implementation status](#implementation-status).
+> **Current status: Stage 3 in progress (Commit 3.1).** Stages 1 and 2 are
+> complete: the project foundation, a verified four-document corpus, a
+> human-reviewed frozen evaluation dataset, and page-aware extraction,
+> normalization and chunking. A BM25 lexical retrieval baseline is
+> implemented, but no retrieval quality has been measured yet. Embeddings, dense
+> retrieval, generation, evaluation runs, the demo UI and deployment are
+> **not implemented yet**. See [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
 application.
@@ -63,7 +63,7 @@ Details and a Mermaid diagram: [docs/architecture.md](docs/architecture.md).
 | CI | GitHub Actions (Ubuntu, Python 3.12) | Configured |
 | PDF validity checks | PyMuPDF 1.28.2 | In use (page counts, readability) |
 | PDF text extraction | PyMuPDF 1.28.2 | In use (raw page-level text, Commit 2.1) |
-| Keyword retrieval | BM25 library (selected in Stage 3) | Planned |
+| Keyword retrieval | rank-bm25 0.2.2 (BM25Okapi) + NumPy 2.5.4 | In use (in-memory baseline, Commit 3.1) |
 | Embeddings | Sentence Transformers | Planned (Stage 3) |
 | Vector index | FAISS CPU | Planned (Stage 3) |
 | Generation | OpenAI API | Planned (Stage 4) |
@@ -95,6 +95,8 @@ python -m founderlens.ingestion.extract
 python -m founderlens.ingestion.normalize
 # Split normalized pages into retrieval chunks (chunks.jsonl, git-ignored)
 python -m founderlens.ingestion.chunk
+# Search the chunks with the BM25 baseline (in-memory index, no network)
+python -m founderlens.retrieval.bm25 --query "NVIDIA Blackwell" --top-k 5
 ```
 
 If the automated download fails, follow the manual steps in
@@ -207,7 +209,21 @@ real-corpus checks: CI never downloads the financial PDFs.
     for full source coverage and overlap limits.
   - No retrieval quality is claimed.
 
-**Not implemented:** retrieval, embeddings, vector
+**Implemented (Commit 3.1), see [docs/architecture.md](docs/architecture.md#bm25-lexical-baseline-implemented-in-commit-31):**
+- BM25 lexical baseline over `chunks.jsonl`: `rank-bm25` BM25Okapi with
+  defaults k1 1.5, b 0.75, epsilon 0.25, top-k 5, and an in-memory index
+  built once per retriever.
+- A versioned tokenizer shared by chunks and queries: casefold plus Unicode
+  letter/digit runs, keeping `39,331`, `37.5` and `non-gaap`. No stemming or
+  stop words.
+- Only chunks containing a query token are returned, ranked by raw score with
+  ties in collection order. Empty or out-of-vocabulary queries return
+  nothing, and scores are not probabilities.
+- `python -m founderlens.retrieval.bm25 --query "..."` (text or `--json`), and
+  `--smoke` for `reports/bm25_smoke_report.json`.
+- Functional smoke test only: no retrieval metrics have been computed.
+
+**Not implemented:** embeddings, dense retrieval, vector
 indexing, generation, citations, abstention, the evaluation harness and judge,
 the Streamlit demo, deployment. No evaluation results exist yet.
 
