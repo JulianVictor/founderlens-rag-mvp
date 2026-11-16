@@ -347,7 +347,17 @@ def test_committed_dataset_is_structurally_valid() -> None:
         assert dict(report.counts[split]) == dict(expected)
 
 
-def test_committed_dataset_metadata_marks_candidate_status() -> None:
+def test_committed_dataset_metadata_records_human_review_and_freeze() -> None:
     meta = json.loads((load_settings().evaluation_dir / "dataset.json").read_text(encoding="utf-8"))
-    assert meta["annotation_status"].startswith("candidate")
+    assert meta["dataset_version"] == "1.0.0"
     assert meta["corpus_version"] == "1.0.0"
+    assert meta["annotation_status"].startswith("human-reviewed")
+    assert meta["benchmark_status"].startswith("frozen")
+    review = meta["human_review"]
+    assert review["outcome"] == "40 accepted, 0 corrections requested, 0 unresolved"
+    # The reviewer recorded no date; the metadata must not invent one.
+    assert review["review_date"] is None
+    # The review was metadata-only, so the changelog keeps the version and
+    # the latest entry says the question files did not change.
+    assert meta["changelog"][-1]["version"] == "1.0.0"
+    assert "hashes unchanged" in meta["changelog"][-1]["change"]

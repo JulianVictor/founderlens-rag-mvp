@@ -4,7 +4,16 @@
   "corpus_id": "founderlens-financial-research",
   "corpus_version": "1.0.0",
   "created": "2026-11-16",
-  "annotation_status": "candidate (authored by Claude Code; pending project-owner review)",
+  "annotation_status": "human-reviewed (all 40 annotations accepted by the project owner without corrections)",
+  "human_review": {
+    "reviewer": "Julian (project owner)",
+    "review_date": null,
+    "review_date_note": "Not recorded by the reviewer; outcome recorded in the repository on 2026-11-16.",
+    "scope": "All 40 questions (24 development, 16 held-out)",
+    "outcome": "40 accepted, 0 corrections requested, 0 unresolved",
+    "independence": "Single reviewer; the project owner, not an independent annotator"
+  },
+  "benchmark_status": "frozen (dataset 1.0.0)",
   "holdout_type": "procedural (public labels; not cryptographically isolated)",
   "files": {
     "questions.dev.jsonl": {
@@ -23,6 +32,11 @@
       "version": "1.0.0",
       "date": "2026-11-16",
       "change": "Initial 40 candidate questions (24 development, 16 held-out)."
+    },
+    {
+      "version": "1.0.0",
+      "date": "2026-11-16",
+      "change": "Metadata only: recorded project-owner review (40 accepted, 0 corrections) and froze the benchmark. Question files and hashes unchanged."
     }
   ]
 }

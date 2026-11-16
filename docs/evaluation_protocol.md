@@ -1,10 +1,12 @@
 # Evaluation Protocol
 
-> **Status: protocol v1.0, finalized in Commit 1.2.** It defines *how* the system
-> will be evaluated. **No experiment has been run and no results exist.** The
-> question set is complete but its labels are **candidate annotations pending
-> project-owner review** (see [`evaluation/README.md`](../evaluation/README.md)).
-> The evaluation harness, including the LLM judge, is implemented in Stage 6.
+> **Status: protocol v1.1.** It defines *how* the system will be evaluated.
+> **No experiment has been run and no results exist.** The question set
+> (dataset v1.0.0) has been **reviewed by the project owner**, who accepted all
+> 40 annotations without corrections, and is **frozen** (see
+> [`evaluation/README.md`](../evaluation/README.md)). v1.1 states the retrieval
+> metric definitions exactly (§3) and adds the benchmark freeze (§10). The
+> evaluation harness, including the LLM judge, is implemented in Stage 6.
 
 ## 1. Inputs
 
@@ -48,32 +50,53 @@ collection (same chunker, size and overlap), the same queries and the same k.**
 Only the ranking function differs. Hybrid fusion, if attempted, is a separate
 system reported next to both baselines.
 
-### Mapping chunks to pages and handling duplicates
+### Top-k, page identities and duplicates
 
-A chunk carries the set of pages it overlaps, `pages(c)`. For the top-k ranked
-chunks `c_1..c_k`:
+A retriever returns a ranked list of chunks `c_1, c_2, …`. Each chunk carries
+the set of page identities it overlaps, `pages(c)`, where a page identity is a
+`(document_id, page_number)` pair.
 
-- `P_k(q) = pages(c_1) ∪ … ∪ pages(c_k)`. This is a **set**, so several chunks from
-  the same page count once. Duplicate or overlapping hits **cannot inflate**
-  recall or coverage.
-- `rank_first(q)` = smallest `i` such that `pages(c_i) ∩ G(q) ≠ ∅`.
-- Also reported: **unique pages in top-k**, `|P_k(q)|`, which exposes redundant
-  retrieval that wastes context.
+1. **Top-k is the first k retrieved chunks**, `c_1..c_k`, exactly as ranked. k
+   counts chunks, because chunks are what the generator receives.
+2. **No deduplication happens before the cut.** Several chunks from the same
+   page each take a slot in the top k. Redundant retrieval therefore costs
+   rank positions, as it costs context in generation.
+3. **Page identities are deduplicated only within those k chunks.**
+   `P_k(q) = pages(c_1) ∪ … ∪ pages(c_k)` is a set, so a page retrieved by
+   several chunks counts once. Duplicates cannot inflate recall or coverage.
+4. Also reported: **unique pages in top-k**, `|P_k(q)|`, which exposes
+   redundant retrieval.
 
-k counts **chunks**, which is what a generator receives.
+**Interchangeable evidence.** A fact can have several accepted pages `E(f)`,
+for example the same figure in a summary table and in a later comparison
+column. They are alternatives, not a conjunction: retrieving **any one**
+accepted page satisfies the fact at the page-annotation level.
+
+**Page coverage is a proxy.** A covered fact means a top-k chunk overlaps an
+accepted page. It does not prove that the chunk contains the supporting
+passage: a chunk can overlap the right page and miss the relevant table row.
+Whether the evidence actually reached the generator is measured separately, by
+groundedness and citation support (§4, §6).
 
 ### Retrieval metrics
 
 Computed **only for answerable questions** (unanswerable questions have no gold
-evidence; their behaviour is measured as abstention in §4).
+evidence; their behaviour is measured as abstention in §4). `F(q)` is the
+question's required facts, `E(f)` the accepted pages for fact `f`, and
+`G(q) = ⋃ E(f)`.
 
 | Metric | Per-question definition | Aggregation |
 |--------|------------------------|-------------|
-| Evidence-page Recall@k, k ∈ {1, 3, 5, 10} | `1 if P_k(q) ∩ G(q) ≠ ∅ else 0` (hit rate: any accepted page retrieved) | Mean over questions |
-| MRR (cut-off 10) | `1 / rank_first(q)` if `rank_first(q) ≤ 10`, else `0` | Mean over questions |
-| Evidence fact coverage@k | `|{f ∈ F(q) : P_k(q) ∩ E(f) ≠ ∅}| / |F(q)|` | Mean over questions |
-| Complete evidence coverage@k | `1` if every `f ∈ F(q)` is covered, else `0`; only questions with `|F(q)| ≥ 2` | Mean over those questions |
+| **Evidence-page Recall@k**, k ∈ {1, 3, 5, 10} | `1 if P_k(q) ∩ G(q) ≠ ∅ else 0`: at least one accepted page of any required fact is in the top k. This is a hit rate, not a fraction of pages retrieved. | Mean over questions |
+| **Required-fact coverage@k** | `|{f ∈ F(q) : P_k(q) ∩ E(f) ≠ ∅}| / |F(q)|`: the fraction of required facts with at least one accepted page in the top k | Mean over questions |
+| **Complete required-fact coverage@k** | `1` if every `f ∈ F(q)` has an accepted page in `P_k(q)`, else `0`. Reported over questions with `|F(q)| ≥ 2`; for a single-fact question it equals Recall@k. | Mean over those questions |
+| **Mean Reciprocal Rank** (cut-off 10) | `1 / rank_first(q)`, where `rank_first(q)` is the smallest chunk rank `i` with `pages(c_i) ∩ G(q) ≠ ∅`. Ranks count chunks before any deduplication. `0` if no such `i ≤ 10`. | Mean over questions |
 | Retrieval latency | Wall-clock time per query (embedding + search, or BM25 scoring), index already loaded, after one warm-up query | p50 and p95 in ms |
+
+Recall@k asks whether *any* evidence was found. Required-fact coverage asks how
+much of the *needed* evidence was found, and complete coverage asks whether
+*all* of it was. For cross-document questions these can differ sharply:
+retrieving one company's page gives Recall@k = 1 but only partial coverage.
 
 Reporting rules:
 
@@ -161,7 +184,7 @@ Labels are binary or small ordinal sets; claim-level where possible.
   deterministic parser found always counts as incorrect.
 - **Aggregation:** per question, correct/required; macro mean; per category.
 - **Categories:** answerable questions.
-- **Limitations:** depends on the quality of candidate reference annotations;
+- **Limitations:** depends on the quality of the reference annotations;
   may penalize correct extra detail when the reference is narrower.
 
 ### 6.3 Answer relevance
@@ -299,7 +322,12 @@ Held-out items are never used for calibration or prompt iteration.
   **evaluation error**. It is retried at most once, then reported as errored,
   and **never counted as a pass**.
 
-## 10. Integrity rules for the held-out split
+## 10. Benchmark freeze and integrity rules for the held-out split
+
+Dataset v1.0.0 is **frozen**. Later stages may tune the system on development
+questions only. Held-out questions must not guide document preprocessing,
+chunk size or overlap, embedding model selection, retrieval configuration,
+generation prompts, or judge prompts and calibration.
 
 - Only **development** questions may be used for tuning or debugging.
 - Do **not** tune chunk size, chunk overlap, top-k, fusion weights or prompts on
@@ -329,9 +357,10 @@ Held-out items are never used for calibration or prompt iteration.
   documents. This tests generalization to new questions, not to new documents.
 - **Public test labels:** anyone, including future model training data, can
   see them.
-- **Annotator bias:** a single author (Claude Code) wrote the candidate labels
-  and they still await owner review. Question style may favour certain
-  retrieval behaviours.
+- **Annotator bias:** a single author (Claude Code) wrote the labels and a
+  single reviewer (the project owner) accepted them. There was no independent
+  second annotation and no inter-annotator agreement measurement. Question
+  style may favour certain retrieval behaviours.
 - **PDF table complexity:** the releases are table-heavy, and text extraction
   breaks row and column structure. This affects retrieval, generation and
   judging alike.

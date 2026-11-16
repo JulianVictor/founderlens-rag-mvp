@@ -94,7 +94,8 @@ substitute a fake.
 ## Evaluation workflow
 
 **Implemented (Commit 1.2):** `evaluation/questions.{dev,test}.jsonl`, 40
-candidate questions in five categories, with fact-level page evidence. Their
+questions in five categories, reviewed by the project owner and frozen at
+dataset v1.0.0, with fact-level page evidence. Their
 hashes are recorded in `evaluation/dataset.json`, and
 `founderlens.evaluation.validate` checks structure, distribution, evidence
 references and file integrity.

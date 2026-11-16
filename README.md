@@ -6,8 +6,8 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 1 complete (Commits 1.1–1.2).** The project foundation,
-> a verified four-document corpus and a candidate evaluation dataset exist.
+> **Current status: Stage 1 complete.** The project foundation, a verified
+> four-document corpus and a human-reviewed, frozen evaluation dataset exist.
 > Ingestion, retrieval, generation, evaluation runs, the demo UI and deployment
 > are **not implemented yet**. See [Implementation status](#implementation-status).
 
@@ -134,8 +134,15 @@ real-corpus checks: CI never downloads the financial PDFs.
 - `founderlens.corpus`: typed manifest parsing; a host-allowlisted HTTPS
   downloader with checksum verification; a read-only corpus validator.
 - `founderlens.evaluation`: typed JSONL schema and a dataset validator.
-- 40 **candidate** evaluation questions (24 development, 16 held-out), pending
-  project-owner review ([evaluation/README.md](evaluation/README.md)).
+- 40 evaluation questions (24 development, 16 held-out)
+  ([evaluation/README.md](evaluation/README.md)).
+
+**Dataset finalization:**
+- The project owner reviewed all 40 annotations and accepted them without
+  corrections. Dataset v1.0.0 is frozen, and its question files and hashes
+  are unchanged.
+- The retrieval metric definitions in the evaluation protocol are made exact
+  (protocol v1.1).
 - Finalized evaluation protocol, including an LLM-as-a-Judge design
   ([docs/evaluation_protocol.md](docs/evaluation_protocol.md)).
 
@@ -145,7 +152,7 @@ the Streamlit demo, deployment. No evaluation results exist yet.
 
 ## Roadmap
 
-1. Project Foundation & Dataset — *complete; dataset labels pending owner review*
+1. Project Foundation & Dataset — *complete; benchmark frozen*
 2. Document Ingestion Pipeline
 3. Retrieval & Vector Search
 4. Grounded RAG Generation
@@ -170,8 +177,8 @@ replace PyMuPDF. This note is not legal advice.
 
 - Fixed, curated corpus only; no user uploads. The source PDFs are not
   redistributed; users download them from the official sites.
-- Evaluation labels are candidate annotations and have not been independently
-  verified. The held-out split is a procedural holdout with public labels.
+- Evaluation labels were written by Claude Code and reviewed by a single
+  reviewer, the project owner. They have not been independently verified. The held-out split is a procedural holdout with public labels.
 - Single-user demo; no authentication, accounts, billing or multi-tenancy.
 - No database; local files and a FAISS index are the only storage.
 - Generation will depend on a third-party API (OpenAI) and its cost/latency.

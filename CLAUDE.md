@@ -93,8 +93,12 @@ python -m founderlens.corpus.validate   # needs local PDFs; not run in CI
   which prints only counts and identifiers, is allowed.
 - Tune chunking, top-k, embedding model choice and prompts on the dev split
   only. Never index evaluation files or put labels in LLM context.
-- The dataset labels are **candidate** annotations until the owner records a
-  review in `evaluation/README.md`. Do not call them human-verified.
+- Dataset v1.0.0 is **frozen** and **human-reviewed**: the project owner
+  accepted all 40 annotations (recorded in `evaluation/README.md`). That was a
+  single-reviewer check, so do not call the labels independently verified.
+- Held-out questions must not guide preprocessing, chunking, embedding model
+  choice, retrieval configuration, generation prompts, or judge prompts and
+  calibration.
 - Changing the dataset requires bumping `dataset_version`, updating hashes and
   the changelog in `evaluation/dataset.json`, and documenting why.
 

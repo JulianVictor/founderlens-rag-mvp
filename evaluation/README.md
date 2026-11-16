@@ -4,11 +4,13 @@
 v1.0.0. The protocol is in
 [`docs/evaluation_protocol.md`](../docs/evaluation_protocol.md).
 
-> **Annotation status: CANDIDATE.** Claude Code authored all 40 questions,
-> reference answers and evidence labels from the original PDFs. The project
-> owner has **not yet reviewed** them. Until that review is recorded below, the
-> dataset must not be described as human-verified, and no benchmark built on it
-> is final.
+> **Annotation status: HUMAN-REVIEWED, FROZEN.** Claude Code authored all 40
+> questions, reference answers and evidence labels from the original PDFs. The
+> project owner reviewed every question and accepted all 40 without
+> corrections (see [Project-owner review](#project-owner-review)). The
+> benchmark is frozen at dataset v1.0.0. The review was by one person, the
+> project owner, so the labels are human-reviewed but not independently
+> verified.
 
 ## Files
 
@@ -75,7 +77,7 @@ Development example (`dev-001`, abridged):
 The third evidence page is valid: the Q4 release's summary table repeats the
 Q3 FY25 revenue in its comparison column.
 
-## How the candidate labels were produced
+## How the labels were produced
 
 1. All 40 pages were read in full from the original PDFs (PyMuPDF page text),
    not taken from memory, summaries or web search.
@@ -99,21 +101,46 @@ Q3 FY25 revenue in its comparison column.
 Schema validation proves the files are well-formed. It does **not** prove that
 the labels are semantically correct.
 
-## Project-owner review (pending)
+## Project-owner review
 
-The reviewer should, for each question:
+For each question, the reviewer checked a ten-item checklist in a local,
+git-ignored review document generated from the committed files:
 
-- open each cited `document_id` / `page_number` and confirm it supports the fact;
-- confirm the numbers, units, periods and GAAP/non-GAAP basis;
-- confirm unanswerable questions really have no support;
-- flag any ambiguity.
+- the question's clarity and its answerability label;
+- the reference answer, company, period, numbers and units;
+- whether the evidence supports each fact, and whether alternative evidence
+  pages are valid;
+- duplicate intent;
+- the cross-document rule, where it applies;
+- that unanswerable questions are absent from the whole corpus.
 
-Record the outcome here and in `dataset.json` (`annotation_status`, changelog).
-If labels change, bump `dataset_version`.
+Items that did not apply to a question were marked N/A in advance.
 
 | Date | Reviewer | Scope | Outcome |
 |------|----------|-------|---------|
-| — | — | — | Not yet reviewed |
+| Not recorded by the reviewer (outcome recorded 2026-11-16) | Julian (project owner) | All 40 questions (24 dev, 16 held-out) | 40 accepted; 0 corrections requested; 0 unresolved. Every applicable checklist item affirmed (176 dev, 119 held-out); no review notes. |
+
+Because no label changed, the dataset stays at **v1.0.0** and both file hashes
+are unchanged. The review documents themselves are private working files and
+are not committed.
+
+## Benchmark freeze
+
+Dataset v1.0.0 is the **frozen benchmark** for all later stages.
+
+- Later stages may tune the system on **development questions only**.
+- Held-out questions must not guide:
+  - document preprocessing or text-cleaning decisions;
+  - chunk size or overlap;
+  - embedding model selection;
+  - retrieval configuration (top-k, BM25 parameters, fusion weights);
+  - generation prompts;
+  - judge prompts or judge calibration.
+- Evaluation labels and reference answers are never indexed, chunked or placed
+  in retrieval or generation context.
+- Any later change to questions, answers or evidence needs a new
+  `dataset_version`, new hashes, a changelog entry and a written reason. Held-out
+  results produced before such a change are not comparable with results after it.
 
 ## Integrity rules
 
@@ -136,3 +163,4 @@ If labels change, bump `dataset_version`.
 | Version | Date | Change |
 |---------|------|--------|
 | 1.0.0 | 2026-11-16 | Initial 40 candidate questions (24 dev, 16 held-out). |
+| 1.0.0 | 2026-11-16 | Metadata only: recorded the project-owner review (40 accepted, 0 corrections) and froze the benchmark. Question files and hashes unchanged. |

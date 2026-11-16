@@ -5,7 +5,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 
 | Stage | Title | Status |
 |------:|-------|--------|
-| 1 | Project Foundation & Dataset | Complete (Commits 1.1–1.2); dataset labels pending owner review |
+| 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
 | 2 | Document Ingestion Pipeline | Planned |
 | 3 | Retrieval & Vector Search | Planned |
 | 4 | Grounded RAG Generation | Planned |
@@ -37,8 +37,8 @@ only when its acceptance criteria are met and verified by the quality gates.
 - The evaluation dataset passes structural validation with the exact required
   distribution.
 - The evaluation protocol is no longer marked preliminary.
-- *Open:* project-owner review of the candidate annotations before the
-  benchmark is final.
+- Project-owner review of the annotations is recorded: 40 accepted, 0
+  corrections. Dataset v1.0.0 is frozen. *(met)*
 
 ## Stage 2 — Document Ingestion Pipeline
 
