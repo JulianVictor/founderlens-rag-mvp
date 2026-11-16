@@ -1,8 +1,10 @@
 # Architecture
 
-> **Status:** Stage 1. Only `founderlens.config` and the `python -m founderlens`
-> entry point exist. Everything else below is the **planned** design and may
-> change as evaluation results come in.
+> **Status:** Stage 1 complete. Implemented: `founderlens.config`, the
+> `python -m founderlens` entry point, `founderlens.corpus` (manifest,
+> acquisition, integrity validation) and `founderlens.evaluation` (dataset
+> schema and validation). Everything else below is the **planned** design and
+> may change as evaluation results come in.
 
 ## Overview
 
@@ -42,8 +44,13 @@ flowchart LR
 
 ## Offline ingestion pipeline (Stage 2)
 
-1. **Manifest-driven fetch.** A fixed list of public PDFs with source URL and
-   SHA-256 checksum. Files land in `data/raw/` (git-ignored).
+1. **Manifest-driven fetch** *(implemented in Commit 1.2)*. `data/manifest.json`
+   lists four official PDFs with provenance, SHA-256, size and page count.
+   `founderlens.corpus.download` fetches over HTTPS from allowlisted hosts
+   only, re-checks redirects, writes to a temporary file, verifies, then
+   renames into `data/raw/` (git-ignored). `founderlens.corpus.validate`
+   re-verifies hash, size, PDF signature, readability, encryption and page
+   count, and is read-only.
 2. **Page-aware extraction.** Text extracted per page so every downstream unit
    keeps `(document_id, page_number)`.
 3. **Cleaning.** Normalize whitespace, de-hyphenate line breaks, strip repeated
@@ -84,18 +91,53 @@ Indicative contracts, not yet implemented:
 The OpenAI client is the only external service and is injected so tests can
 substitute a fake.
 
-## Evaluation workflow (Stage 6)
+## Evaluation workflow
 
-Question set (single-document, cross-document, unanswerable) split into
-development and held-out sets → run retrieval and generation → score with the
-metrics in `evaluation_protocol.md` → write versioned reports to `reports/`.
+**Implemented (Commit 1.2):** `evaluation/questions.{dev,test}.jsonl`, 40
+candidate questions in five categories, with fact-level page evidence. Their
+hashes are recorded in `evaluation/dataset.json`, and
+`founderlens.evaluation.validate` checks structure, distribution, evidence
+references and file integrity.
+
+**Planned (Stage 6):** a hybrid harness, specified in
+[`evaluation_protocol.md`](evaluation_protocol.md):
+
+1. deterministic retrieval metrics (page-level Recall@k, MRR, fact coverage);
+2. deterministic citation validation;
+3. reference-based answer checks (numeric parsing against required facts);
+4. LLM-as-a-Judge, with one call and schema per dimension: faithfulness,
+   correctness, relevance, completeness, citation support, abstention;
+5. human calibration of the judge on predefined development items;
+6. operational metrics (latency, tokens, cost).
+
+```mermaid
+flowchart LR
+    DS[(evaluation/*.jsonl<br/>labels)] -->|question text only| PIPE[RAG pipeline<br/>retrieve + generate]
+    PIPE --> OUT[answer + citations<br/>+ retrieved context]
+    OUT --> DET[Deterministic checks<br/>retrieval, citations, numbers]
+    OUT --> JUDGE[LLM judge<br/>separate model where practical]
+    DS -->|reference facts, only for<br/>dimensions that need them| JUDGE
+    DS --> DET
+    DET --> REP[(reports/)]
+    JUDGE --> REP
+    HUM[Human calibration<br/>dev subset] -.agreement.-> JUDGE
+```
+
+**Isolation boundary.** The pipeline receives only the question text. Labels,
+reference answers and evidence never reach retrieval, generation or an index.
+The judge receives references only for correctness and abstention; it judges
+faithfulness against the retrieved context. Evaluated text is treated as
+untrusted data, and malformed judge output is recorded as an error, never a
+pass.
 
 ## Module boundaries
 
 | Module (planned) | Responsibility | Depends on |
 |------------------|----------------|------------|
 | `config` *(implemented)* | Project root and path resolution | stdlib |
-| `ingestion` | Fetch, extract, clean, chunk | config, PyMuPDF |
+| `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts only) |
+| `evaluation` *(schema and validation implemented)* | Dataset schema and validation; metrics, runner and judge planned | config, corpus manifest |
+| `ingestion` | Extract, clean, chunk | config, corpus, PyMuPDF |
 | `retrieval` | BM25, dense, FAISS index | config, chunks |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
@@ -108,7 +150,8 @@ Modules are created only in the stage that needs them.
 
 | Location | Contents | Tracked in git |
 |----------|----------|----------------|
-| `data/manifest.json` | Corpus definition | Yes (Commit 1.2) |
+| `data/manifest.json` | Corpus definition (v1.0.0) | Yes |
+| `evaluation/` | Questions, metadata and hashes | Yes |
 | `data/raw/` | Downloaded PDFs | No |
 | `data/processed/` | Extracted/chunked text | No |
 | `artifacts/` | Indexes, embeddings | No |
@@ -128,3 +171,10 @@ Modules are created only in the stage that needs them.
   measurable rather than assumed.
 - **Stdlib configuration.** A frozen dataclass avoids a settings-library
   dependency; revisit only if configuration grows substantially.
+- **Stdlib downloader.** `urllib` with an explicit host allowlist and redirect
+  checks avoids an HTTP-client dependency for four files.
+- **PyMuPDF pinned at 1.28.2.** The 2.x line pulls in onnxruntime, numpy and
+  networkx unconditionally. 1.28.x has no transitive dependencies. Its AGPL
+  license must be resolved before public deployment (see README).
+- **Metadata, not documents, in git.** The PDFs are fetched from official
+  sources and verified by SHA-256 rather than redistributed.

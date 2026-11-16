@@ -18,8 +18,8 @@ jobs:
     name: Quality gates (Python 3.12)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # No secrets are referenced: Stage 1 needs no OpenAI credentials,
-    # runtime models, or financial documents.
+    # No secrets are referenced: Stage 1 needs no OpenAI credentials or
+    # runtime models, and CI never downloads the financial documents.
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -58,3 +58,8 @@ jobs:
 
       - name: pytest with coverage
         run: python -m pytest -q --cov=founderlens --cov-report=term-missing
+
+      # Structural validation of the committed evaluation dataset against the
+      # committed manifest. Needs no PDFs. Corpus PDF validation is local-only.
+      - name: Evaluation dataset validation
+        run: python -m founderlens.evaluation.validate

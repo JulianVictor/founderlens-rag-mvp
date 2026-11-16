@@ -50,6 +50,8 @@ python -m ruff check .
 python -m ruff format --check .
 python -m mypy src tests
 python -m pytest -q
+python -m founderlens.evaluation.validate
+python -m founderlens.corpus.validate   # needs local PDFs; not run in CI
 ```
 
 - mypy is strict; no blanket `ignore_missing_imports`, no unjustified `Any`
@@ -75,12 +77,26 @@ python -m pytest -q
 - Never read, print, log, or commit API keys. `.env` is git-ignored;
   `.env.example` holds placeholders only. Check diffs for secrets before committing.
 
+## Corpus
+
+- The corpus is fixed by `data/manifest.json` (v1.0.0). Never commit PDFs,
+  never edit hashes, sizes or page counts to make validation pass, and never
+  substitute documents. Any change needs a new corpus version.
+- PyMuPDF is used only for validity checks and page counts until Stage 2.
+
 ## Evaluation integrity
 
 - Never invent metrics, scores, latencies, or benchmark results. Report only
   numbers produced by a run in this repository, with the command used.
-- Keep held-out evaluation questions out of prompts, few-shot examples, and
-  tuning loops. Do not tune on the held-out split.
+- **Do not read `evaluation/questions.test.jsonl` content** for development,
+  debugging or optimization. Running `python -m founderlens.evaluation.validate`,
+  which prints only counts and identifiers, is allowed.
+- Tune chunking, top-k, embedding model choice and prompts on the dev split
+  only. Never index evaluation files or put labels in LLM context.
+- The dataset labels are **candidate** annotations until the owner records a
+  review in `evaluation/README.md`. Do not call them human-verified.
+- Changing the dataset requires bumping `dataset_version`, updating hashes and
+  the changelog in `evaluation/dataset.json`, and documenting why.
 
 ## Git
 

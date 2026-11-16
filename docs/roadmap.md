@@ -5,7 +5,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 
 | Stage | Title | Status |
 |------:|-------|--------|
-| 1 | Project Foundation & Dataset | In progress — Commit 1.1 done |
+| 1 | Project Foundation & Dataset | Complete (Commits 1.1–1.2); dataset labels pending owner review |
 | 2 | Document Ingestion Pipeline | Planned |
 | 3 | Retrieval & Vector Search | Planned |
 | 4 | Grounded RAG Generation | Planned |
@@ -23,22 +23,29 @@ only when its acceptance criteria are met and verified by the quality gates.
 **Deliverables.**
 - Commit 1.1: package scaffolding, typed configuration, Ruff/mypy/pytest
   configuration, CI workflow, initial documentation. *(implemented)*
-- Commit 1.2: corpus definition (`data/manifest.json` with source URLs,
-  checksums and licensing notes, `data/README.md`) and an initial evaluation
-  question set; finalize the evaluation protocol. *(planned)*
+- Commit 1.2: versioned corpus manifest (four official earnings releases,
+  provenance, SHA-256, sizes, page counts), a verified downloader, a corpus
+  validator, 40 candidate evaluation questions with page-level evidence
+  (24 dev / 16 held-out), a dataset validator, and the finalized evaluation
+  protocol including the LLM-as-a-Judge design. *(implemented)*
 
 **Acceptance criteria.**
 - All quality gates pass locally and in CI.
 - `python -m founderlens` runs without credentials or network access.
 - The corpus is fully specified by the manifest; raw PDFs are not committed.
+- All four real PDFs verify against the manifest locally.
+- The evaluation dataset passes structural validation with the exact required
+  distribution.
 - The evaluation protocol is no longer marked preliminary.
+- *Open:* project-owner review of the candidate annotations before the
+  benchmark is final.
 
 ## Stage 2 — Document Ingestion Pipeline
 
 **Goal.** Turn the fixed PDF corpus into clean, page-aware, chunked text.
 
-**Deliverables.** Manifest-driven fetch with checksum verification; PyMuPDF
-page-level extraction; text cleaning; configurable chunking (size, overlap)
+**Deliverables.** PyMuPDF page-level extraction from the verified corpus (the
+fetch with checksum verification already exists from Commit 1.2); text cleaning; configurable chunking (size, overlap)
 that preserves document ID and page range per chunk; processed output in
 `data/processed/`.
 
@@ -84,11 +91,14 @@ are evaluated separately with reported (not invented) results.
 
 **Goal.** Reproducible end-to-end evaluation.
 
-**Deliverables.** Evaluation runner for retrieval, answer correctness,
-citation correctness, grounding and abstention; latency and token usage
-capture; versioned reports in `reports/`.
+**Deliverables.** Evaluation runner implementing the hybrid framework in
+`docs/evaluation_protocol.md`: deterministic retrieval and citation metrics,
+reference-based checks, LLM-as-a-Judge dimensions, human calibration, and
+latency, token and cost capture; versioned reports in `reports/`.
 
-**Acceptance criteria.** One command reproduces a report; held-out split is
+**Acceptance criteria.** One command reproduces a report; the judge's
+agreement with human labels is measured on the predefined development
+calibration set before its scores are reported; the held-out split is
 evaluated only after development tuning is frozen.
 
 ## Stage 7 — Streamlit Interactive Demo

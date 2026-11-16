@@ -8,10 +8,15 @@ dynamic = ["version"]
 description = "Evidence-grounded RAG research system over a fixed corpus of public financial documents."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
-# Runtime dependencies are intentionally empty in Stage 1. Each later stage adds
-# only the dependencies it actually uses. Development tools live in
+# Runtime dependencies are added only by the commit that first uses them and
+# pinned exactly for reproducibility. Development tools live in
 # requirements-dev.txt (single source of truth, pinned).
-dependencies = []
+dependencies = [
+    # PDF validity checks and page counts (Commit 1.2). 1.28.x has no transitive
+    # dependencies; 2.x pulls in onnxruntime/numpy/networkx, which Stage 1 does
+    # not need. License: AGPL-3.0 or Artifex commercial — see README.
+    "pymupdf==1.28.2",
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
@@ -65,6 +70,10 @@ mypy_path = "src"
 files = ["src", "tests"]
 warn_unreachable = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
+# PyMuPDF ships py.typed but leaves some public functions unannotated
+# (e.g. pymupdf.open, TOOLS.*). Exempt only calls into that package from
+# disallow_untyped_calls; everything else stays fully strict.
+untyped_calls_exclude = ["pymupdf"]
 
 # --------------------------------------------------------------------------- #
 # pytest / coverage
@@ -72,6 +81,7 @@ enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
 [tool.pytest.ini_options]
 minversion = "9.0"
 testpaths = ["tests"]
+pythonpath = ["."]  # lets tests import shared helpers from the tests package
 addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importlib"]
 xfail_strict = true
 filterwarnings = ["error"]

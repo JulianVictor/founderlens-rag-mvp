@@ -1,0 +1,28 @@
+{
+  "dataset_id": "founderlens-financial-research-eval",
+  "dataset_version": "1.0.0",
+  "corpus_id": "founderlens-financial-research",
+  "corpus_version": "1.0.0",
+  "created": "2026-11-16",
+  "annotation_status": "candidate (authored by Claude Code; pending project-owner review)",
+  "holdout_type": "procedural (public labels; not cryptographically isolated)",
+  "files": {
+    "questions.dev.jsonl": {
+      "split": "development",
+      "question_count": 24,
+      "sha256": "12d6c7f5e3161f3aa6848597e3f031005a4e4d6347c140db57d40fee0162a8cb"
+    },
+    "questions.test.jsonl": {
+      "split": "held-out",
+      "question_count": 16,
+      "sha256": "4248f5b50f8d25421a650d881812d4c7d27dce7a3e8c32431f02cdf765ac7307"
+    }
+  },
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-11-16",
+      "change": "Initial 40 candidate questions (24 development, 16 held-out)."
+    }
+  ]
+}

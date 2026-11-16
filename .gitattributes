@@ -1,0 +1,5 @@
+# Evaluation files are integrity-checked by SHA-256 (evaluation/dataset.json).
+# Force LF so checkouts with core.autocrlf=true keep byte-identical files.
+evaluation/*.jsonl text eol=lf
+evaluation/dataset.json text eol=lf
+data/manifest.json text eol=lf

@@ -25,8 +25,10 @@ from pathlib import Path
 
 PROJECT_ROOT_ENV_VAR = "FOUNDERLENS_PROJECT_ROOT"
 
+CORPUS_MANIFEST_RELPATH = Path("data") / "manifest.json"
 RAW_DATA_DIRNAME = Path("data") / "raw"
 PROCESSED_DATA_DIRNAME = Path("data") / "processed"
+EVALUATION_DIRNAME = Path("evaluation")
 ARTIFACTS_DIRNAME = Path("artifacts")
 REPORTS_DIRNAME = Path("reports")
 
@@ -44,6 +46,14 @@ class Settings:
     def __post_init__(self) -> None:
         # Guard direct construction as well as load_settings().
         _validate_root(self.project_root, source="project_root")
+
+    @property
+    def corpus_manifest_path(self) -> Path:
+        return self.project_root / CORPUS_MANIFEST_RELPATH
+
+    @property
+    def evaluation_dir(self) -> Path:
+        return self.project_root / EVALUATION_DIRNAME
 
     @property
     def raw_data_dir(self) -> Path:
