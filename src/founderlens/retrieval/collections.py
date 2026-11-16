@@ -64,6 +64,13 @@ def chunking_report_path(settings: Settings, name: CollectionName) -> Path:
 
 def load_named_collection(settings: Settings, name: CollectionName) -> ChunkCollection:
     """Load and verify a collection, and require its records' chunking configuration id."""
+    if name == "v2" and not collection_path(settings, name).is_file():
+        raise RetrievalError(
+            [
+                f"collection v2 not found: {collection_path(settings, name).name}; build it with "
+                "python -m founderlens.retrieval.embeddings build-collection"
+            ]
+        )
     collection = load_chunk_collection(
         collection_path(settings, name),
         settings.corpus_manifest_path,

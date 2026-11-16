@@ -450,7 +450,8 @@ def test_output_must_be_inside_artifacts_and_not_clobber_other_files(make_projec
 
 def test_import_and_entry_point_do_not_load_the_model() -> None:
     code = (
-        "import sys, founderlens.retrieval.embeddings, founderlens.__main__;"
+        "import sys, founderlens.retrieval.embeddings, founderlens.retrieval.dense;"
+        "import founderlens.__main__;"
         "print(any(m in sys.modules for m in ('torch', 'sentence_transformers', 'transformers')))"
     )
     result = subprocess.run(

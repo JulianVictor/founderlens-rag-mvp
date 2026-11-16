@@ -94,11 +94,18 @@ configuration on dev data only if any chunk exceeds the model limit (see
   - BM25 and dense retrieval are to be compared on V2.
 
   *(implemented; no retrieval quality measured)*
-- Commit 3.3: dense retrieval over the embedding artifact, using the same
-  chunk collection as BM25. *(planned)*
+- Commit 3.3: exact dense retrieval: cosine similarity as a dot product of
+  L2-normalized vectors, exhaustive in NumPy, over the validated V2 artifact.
+  - Query embedding with the same pinned model; over-limit queries are
+    rejected, never truncated.
+  - Stable tie-breaking, a shared result type, a CLI defaulting to V2, and a
+    dense-vs-BM25 smoke report on V2
+    ([architecture.md](architecture.md#exact-dense-retrieval-commit-33)).
+
+  *(implemented; retrieval quality not yet measured)*
+- Commit 3.4: development-split retrieval evaluation of BM25 and dense, both
+  on V2. *(planned)*
 - Optional hybrid fusion. *(planned)*
-- Development-split benchmark of BM25 and dense on the same chunk collection.
-  *(planned, Commit 3.4)*
 
 **Acceptance criteria.** Index build is reproducible from processed chunks;
 retrieval metrics (see evaluation protocol) are reported for BM25 and dense

@@ -6,15 +6,18 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 3 in progress (Commits 3.1–3.2).** Stages 1 and 2
+> **Current status: Stage 3 in progress (Commits 3.1–3.3).** Stages 1 and 2
 > are complete: the project foundation, a verified four-document corpus, a
 > human-reviewed frozen evaluation dataset, and page-aware extraction,
-> normalization and chunking. A BM25 lexical retrieval baseline and a local
-> embedding pipeline are implemented. Token-budgeted chunking V2 (164 chunks,
-> all within the model's 256-token limit) is fully embedded. No retrieval
-> quality has been measured. Dense retrieval, generation, evaluation runs, the
-> demo UI and deployment are **not implemented yet**. See
-> [Implementation status](#implementation-status).
+> normalization and chunking. Implemented so far:
+> - a BM25 lexical retrieval baseline;
+> - a local embedding pipeline, with token-budgeted chunking V2 (164 chunks,
+>   all within the model's 256-token limit) fully embedded;
+> - exact dense (cosine) retrieval over V2.
+>
+> **Retrieval quality has not been measured yet** (Commit 3.4). Generation,
+> evaluation runs, the demo UI and deployment are **not implemented yet**.
+> See [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
 application.
@@ -67,7 +70,7 @@ Details and a Mermaid diagram: [docs/architecture.md](docs/architecture.md).
 | PDF text extraction | PyMuPDF 1.28.2 | In use (raw page-level text, Commit 2.1) |
 | Keyword retrieval | rank-bm25 0.2.2 (BM25Okapi) + NumPy 2.5.4 | In use (in-memory baseline, Commit 3.1) |
 | Embeddings | sentence-transformers 6.2.0, `all-MiniLM-L6-v2` (pinned revision), PyTorch 2.15.0 CPU | In use (Commit 3.2): chunking V2 fully embedded; no dense search yet |
-| Vector index | FAISS CPU | Planned (Stage 3) |
+| Vector search | Exact NumPy dot product (164 × 384); FAISS not needed at this size | In use (Commit 3.3) |
 | Generation | OpenAI API | Planned (Stage 4) |
 | Demo | Streamlit | Planned (Stage 7) |
 
@@ -109,6 +112,9 @@ python -m founderlens.retrieval.embeddings audit --collection v2
 python -m founderlens.retrieval.embeddings build --collection v2
 python -m founderlens.retrieval.embeddings validate --collection v2
 python -m founderlens.retrieval.bm25 --collection v2 --query "NVIDIA Blackwell"
+# Exact dense retrieval (defaults to V2; model loaded from the local cache)
+python -m founderlens.retrieval.dense --query "How quickly is the AI chip maker's main business growing?"
+python -m founderlens.retrieval.dense --smoke   # dense and BM25 on V2 -> reports/
 ```
 
 PyTorch is a pinned runtime dependency. On Windows and macOS the PyPI wheel
@@ -266,7 +272,25 @@ real-corpus checks: CI never downloads the financial PDFs.
   384) float32, unit norm within 3e-8, and two builds were byte-identical.
   BM25 and dense retrieval are compared on V2 only.
 
-**Not implemented:** dense retrieval, vector
+**Implemented (Commit 3.3), see [docs/architecture.md](docs/architecture.md#exact-dense-retrieval-commit-33):**
+- Exact dense retrieval over the validated V2 embedding artifact:
+  - query encoded with the same pinned MiniLM model, loaded lazily and
+    reused;
+  - cosine as a dot product of unit vectors (`matrix @ query`), exhaustive in
+    NumPy;
+  - descending raw scores with ties in collection order, default top-k 5.
+- Empty or punctuation-only queries return nothing without loading the
+  model. Queries over 256 tokens are rejected, never truncated.
+- Artifacts are validated once at load (hashes, model revision,
+  configuration, row order) and never rebuilt implicitly.
+- Cosine scores are not relevance probabilities, and there is no threshold:
+  the nearest neighbours are returned even for unrelated questions.
+- `python -m founderlens.retrieval.dense --query "..."` defaults to V2. BM25
+  keeps its V1 default, so comparisons pass `--collection v2` to both.
+- Functional smoke test only: retrieval quality has not been measured
+  (Commit 3.4).
+
+**Not implemented:** hybrid retrieval, vector
 indexing, generation, citations, abstention, the evaluation harness and judge,
 the Streamlit demo, deployment. No evaluation results exist yet.
 

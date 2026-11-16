@@ -1,8 +1,9 @@
 # Architecture
 
 > **Status:** Stage 1 complete; Stage 2 (Commits 2.1–2.3) implemented;
-> Stage 3 Commit 3.1 (BM25 baseline) and Commit 3.2 (chunking V2 and the
-> full-corpus embedding pipeline) implemented.
+> Stage 3 Commits 3.1 (BM25 baseline), 3.2 (chunking V2 and the full-corpus
+> embedding pipeline) and 3.3 (exact dense retrieval) implemented; retrieval
+> quality not yet measured.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -10,7 +11,8 @@
 > - `founderlens.ingestion` (raw page-level extraction, normalization, table
 >   candidates, page-aware chunking);
 > - `founderlens.retrieval` (lexical tokenizer, in-memory BM25 baseline,
->   shared result type, token-length audit and embedding artifact pipeline).
+>   shared result type, token-length audit, embedding artifact pipeline and
+>   exact dense retrieval).
 >
 > Everything else below is the **planned** design and may change as
 > evaluation results come in.
@@ -495,9 +497,134 @@ V1 chunks. `build --collection v1` refuses without encoding anything.
 - The transitive packages are not pinned in `pyproject.toml`. Every
   embedding manifest records the versions it was built with.
 
-- **Dense retrieval (Commit 3.3, planned).** Exact search over the
-  normalized matrix (a FAISS CPU index is optional at this size). Expected to
-  handle paraphrase that BM25 misses; not measured yet.
+### Exact dense retrieval (Commit 3.3)
+
+`founderlens.retrieval.dense` performs exact cosine search over a validated
+(collection, embedding artifact) pair. **Retrieval quality has not been
+measured yet**; Commit 3.4 evaluates BM25 and dense retrieval on the dev
+split.
+
+**Lifecycle.**
+1. `load_dense_retriever(settings, "v2")` loads the named collection and its
+   artifact once, with all of the artifact loader's checks (see the
+   validation list below).
+2. A missing or invalid artifact fails with the command that rebuilds it.
+   Nothing is rebuilt or downloaded implicitly.
+3. The matrix is held in memory, as one float64 copy for scoring, and reused
+   for every query. The copy is about 0.5 MB, made once per retriever and
+   never per query; the stored artifact stays float32. Each query converts
+   only its own 384-value vector.
+4. The pinned model loads lazily on the first non-empty query. Its identity
+   (model ID and revision) is checked once against the artifact, and the
+   model is reused afterwards.
+5. Documents are never re-embedded at query time.
+
+**Validation before serving.** The loader checks:
+- collection ID and SHA-256;
+- matrix SHA-256;
+- model ID and immutable revision;
+- `embedding_config_id`;
+- dimension (384), dtype float32, finite values and unit norms;
+- exact row → chunk order.
+
+V1 chunks with V2 embeddings, reordered chunks, a corrupted matrix, a
+different model revision or a different configuration are all rejected.
+
+**Queries.**
+- A query with no Unicode letter or digit (empty, whitespace or punctuation
+  only) returns no results, and neither the model nor the scoring is used.
+- Any other query is encoded exactly as given: no stemming, punctuation or
+  number removal, prefix or prompt. It uses the same model, revision,
+  tokenizer, 256-token limit, L2 normalization and float32 as the documents.
+- The query's token count (special tokens included, no truncation or
+  padding) is measured first. A longer query is rejected with its count and
+  the limit, and is never truncated.
+- Dense retrieval has no vocabulary, so words BM25 does not know are not a
+  reason to reject a query.
+
+**Mathematics.** Cosine similarity is `cos(q, d) = q·d / (|q| |d|)`. Both
+the query and every row are L2-normalized, so `|q| = |d| = 1` and cosine is
+the dot product. All 164 scores come from one matrix–vector product,
+`scores = matrix @ query`, accumulated in float64.
+- This is exact exhaustive search: O(N·d) per query, here 164 × 384 = 63k
+  multiply-adds, which took about 0.1–0.3 ms.
+- NumPy is sufficient at this size. An approximate index (FAISS, HNSW) would
+  only add error and dependencies.
+- Unit norms hold to 1e-5, so a score may exceed ±1 by at most
+  `2e-5 + 1e-10` (`SCORE_BOUND_TOLERANCE`) and is reported unclipped.
+  Anything beyond that, or any non-finite value, is an error.
+
+**Ranking.**
+- Descending raw cosine; exact ties keep collection order (stable sort).
+- Top-k defaults to 5 and must be a positive integer (booleans rejected). A
+  k larger than the collection returns every chunk.
+- No duplicate chunk IDs, and no page or document deduplication.
+- Zero and negative scores are kept, and there is no score cutoff.
+
+**Scores are not relevance probabilities.** Cosine measures direction in
+embedding space. A non-empty query always gets its nearest neighbours, even
+when nothing relevant exists. The smoke query "What is a good recipe for
+banana bread?" still returned five chunks, scoring 0.11–0.13. Returning
+neighbours is not a claim that the corpus can answer the question.
+
+**Result contract.**
+- Results are the shared `RetrievalResult` with `method="dense"`, a one-based
+  rank, the raw cosine score and the original chunk record: text, offsets,
+  page and document provenance.
+- BM25 results are unchanged, and the two scores are never mixed or
+  normalized against each other.
+- `DenseRetriever.identity()` keeps five identities separate:
+  - the retriever configuration (`dense_config_id` `088da6b50923`; top-k is
+    not part of it);
+  - the embedding configuration (`cdf57c2283c6`);
+  - the collection ID (`0c2f87411627`);
+  - the collection SHA-256;
+  - the matrix SHA-256.
+
+**Command line.** Dense retrieval defaults to V2. The BM25 command keeps its
+V1 default for backward compatibility, so comparisons must pass
+`--collection v2` to BM25 explicitly.
+
+```powershell
+python -m founderlens.retrieval.dense --query "How quickly is the AI chip maker's main business growing?"
+python -m founderlens.retrieval.dense --query "Google Cloud" --top-k 10 --json
+python -m founderlens.retrieval.dense --smoke   # dense and BM25 on V2: reports/dense_smoke_report.<id>.json
+python -m founderlens.retrieval.bm25 --collection v2 --query "Google Cloud"
+```
+
+- `--collection v1` fails with an explanation: V1 cannot be embedded.
+- An over-limit query or an invalid artifact exits `1`; invalid arguments
+  exit `2`.
+- `python -m founderlens` never loads the model.
+
+**Smoke run (V2, this machine, CPU).** 15 queries, written for this test
+rather than taken from the evaluation set.
+- Timing: model load 7.7 s cold (PyTorch import and weights); warm query
+  encoding median 11.6 ms; exact scoring and ranking 0.1–0.3 ms per query.
+- Two independently loaded retrievers gave identical rankings and
+  bit-identical scores for every query (max abs difference 0.0).
+- Lexical-versus-semantic differences, described rather than judged:
+  - "How quickly is the AI chip maker's main business growing?": dense puts
+    NVIDIA Q3 page 1 chunks first, while BM25's top hit is an Alphabet
+    page 1 chunk.
+  - "money the search company spent on servers and data centers": dense
+    puts Alphabet page 2 chunks first, BM25 an NVIDIA chunk.
+  - "fourth quarter fiscal 2025": dense ranks Alphabet Q4 chunks first,
+    while BM25 ranks NVIDIA chunks that contain the exact words first.
+  - Exact-name queries such as "NVIDIA Blackwell" and "free cash flow" share
+    2–3 pages between the two top-5 lists.
+  - The oversized query (302 tokens) is rejected by dense retrieval and
+    still answered by BM25, which has no token limit.
+
+**Limitations.**
+- Retrieval quality has not been measured.
+- MiniLM is a small general-purpose English model: exact figures and fiscal
+  labels are weak signals, and company names can be confused.
+- A 256-token query limit.
+- Bitwise score equality is only shown on this machine; cross-platform
+  bitwise determinism is not claimed.
+- No hybrid retrieval, reranking or filtering.
+
 - **Hybrid (optional).** Score or rank fusion, adopted only if evaluation
   shows a measurable gain.
 
@@ -561,7 +688,7 @@ pass.
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
 | `evaluation` *(schema and validation implemented)* | Dataset schema and validation; metrics, runner and judge planned | config, corpus manifest |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
-| `retrieval` *(BM25 and embedding pipeline implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit and embedding artifacts (done); dense search (planned) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
+| `retrieval` *(BM25, embeddings and dense search implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval (done); hybrid (optional, planned) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |
@@ -578,7 +705,7 @@ Modules are created only in the stage that needs them.
 | `data/raw/` | Downloaded PDFs | No |
 | `data/processed/` | `pages.raw.jsonl` (raw page text), `pages.normalized.jsonl` (normalized text + table candidates), `chunks.jsonl` (retrieval chunks) | No |
 | `artifacts/` | `embeddings/<chunking config ID>/` (`embeddings.npy` + `manifest.json`); later indexes | No |
-| `reports/` | Extraction, normalization and chunking reports, BM25 smoke report, embedding token audit and build reports, evaluation outputs | No (summaries copied to docs when verified) |
+| `reports/` | Extraction, normalization and chunking reports, BM25 and dense smoke reports, embedding token audit and build reports, evaluation outputs | No (summaries copied to docs when verified) |
 
 ## Design decisions and trade-offs
 

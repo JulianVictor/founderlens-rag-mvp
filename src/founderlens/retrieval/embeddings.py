@@ -521,6 +521,13 @@ def embed_texts(
                     f"expected ({len(batch)}, {config.dimension})"
                 ]
             )
+        if output.dtype not in (np.float32, np.float64):
+            raise EmbeddingError(
+                [
+                    f"encoder returned dtype {output.dtype} for rows "
+                    f"{start}..{start + len(batch) - 1}; expected float32 or float64"
+                ]
+            )
         batches.append(output.astype(np.float64))
     raw = np.vstack(batches)
     if not np.all(np.isfinite(raw)):
