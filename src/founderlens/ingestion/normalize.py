@@ -120,6 +120,7 @@ class NormalizationConfig:
             "trailing_whitespace": "removed per line",
             "max_consecutive_blank_lines": self.max_consecutive_blank_lines,
             "leading_and_trailing_blank_lines": "removed",
+            "final_newline": "exactly one LF on non-empty text; empty text stays empty",
             "leading_and_internal_spaces": "preserved (column alignment)",
             "not_applied": [
                 "lowercasing",

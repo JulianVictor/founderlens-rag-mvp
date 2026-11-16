@@ -236,6 +236,20 @@ def test_artifact_is_deterministic_and_raw_untouched(make_project: Factory) -> N
     assert set(report["operational"]) == {"note", "normalization_duration_seconds"}
 
 
+def test_report_states_the_final_newline_rule(make_project: Factory) -> None:
+    root = _project(make_project)
+    _run(root)
+    report = json.loads((root / "reports" / "normalization_report.json").read_text("utf-8"))
+    rule = report["normalization_config"]["final_newline"]
+    assert rule == "exactly one LF on non-empty text; empty text stays empty"
+    # The stated rule matches the implemented behaviour.
+    assert normalize_text("a") == normalize_text("a\n\n\n") == "a\n"
+    assert normalize_text("") == normalize_text(" \n\t\n") == ""
+    for record in parse_normalized_jsonl(_normalized(root).read_text("utf-8")):
+        text = record.normalized_text
+        assert text == "" or (text.endswith("\n") and not text.endswith("\n\n"))
+
+
 def test_missing_raw_artifact(make_project: Factory) -> None:
     root = _project(make_project)
     with pytest.raises(NormalizationError, match=r"raw artifact not found.*ingestion\.extract"):
