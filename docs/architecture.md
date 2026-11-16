@@ -1,9 +1,10 @@
 # Architecture
 
-> **Status:** Stage 1 complete. Implemented: `founderlens.config`, the
-> `python -m founderlens` entry point, `founderlens.corpus` (manifest,
-> acquisition, integrity validation) and `founderlens.evaluation` (dataset
-> schema and validation). Everything else below is the **planned** design and
+> **Status:** Stage 1 complete; Stage 2 Commit 2.1 implemented. Implemented:
+> - `founderlens.config` and the `python -m founderlens` entry point;
+> - `founderlens.corpus` (manifest, acquisition, integrity validation);
+> - `founderlens.evaluation` (dataset schema and validation);
+> - `founderlens.ingestion` (raw page-level extraction). Everything else below is the **planned** design and
 > may change as evaluation results come in.
 
 ## Overview
@@ -51,8 +52,17 @@ flowchart LR
    renames into `data/raw/` (git-ignored). `founderlens.corpus.validate`
    re-verifies hash, size, PDF signature, readability, encryption and page
    count, and is read-only.
-2. **Page-aware extraction.** Text extracted per page so every downstream unit
-   keeps `(document_id, page_number)`.
+2. **Page-aware extraction** *(implemented in Commit 2.1;
+   [ingestion.md](ingestion.md))*. `founderlens.ingestion.extract`:
+   - validates the corpus;
+   - re-hashes each PDF and opens it from memory;
+   - extracts every physical page with
+     `Page.get_text("text", sort=True, flags=67)`;
+   - writes one typed `PageRecord` per page (`page_id` =
+     `{document_id}:p{NNNN}`) to `data/processed/pages.raw.jsonl`, atomically;
+   - writes diagnostics to `reports/extraction_report.json`.
+
+   The text is raw, not cleaned.
 3. **Cleaning.** Normalize whitespace, de-hyphenate line breaks, strip repeated
    headers/footers where detectable. Cleaning must be deterministic.
 4. **Chunking.** Configurable size and overlap; each chunk records its
@@ -136,9 +146,9 @@ pass.
 | Module (planned) | Responsibility | Depends on |
 |------------------|----------------|------------|
 | `config` *(implemented)* | Project root and path resolution | stdlib |
-| `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts only) |
+| `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
 | `evaluation` *(schema and validation implemented)* | Dataset schema and validation; metrics, runner and judge planned | config, corpus manifest |
-| `ingestion` | Extract, clean, chunk | config, corpus, PyMuPDF |
+| `ingestion` *(extraction implemented)* | Extract (done), normalize, chunk | config, corpus, PyMuPDF |
 | `retrieval` | BM25, dense, FAISS index | config, chunks |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
@@ -154,9 +164,9 @@ Modules are created only in the stage that needs them.
 | `data/manifest.json` | Corpus definition (v1.0.0) | Yes |
 | `evaluation/` | Questions, metadata and hashes | Yes |
 | `data/raw/` | Downloaded PDFs | No |
-| `data/processed/` | Extracted/chunked text | No |
+| `data/processed/` | `pages.raw.jsonl` (raw page text); later normalized and chunked text | No |
 | `artifacts/` | Indexes, embeddings | No |
-| `reports/` | Evaluation outputs | No (summaries copied to docs when verified) |
+| `reports/` | Extraction report, evaluation outputs | No (summaries copied to docs when verified) |
 
 ## Design decisions and trade-offs
 

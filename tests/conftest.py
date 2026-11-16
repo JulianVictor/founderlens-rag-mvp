@@ -30,6 +30,29 @@ def make_pdf_bytes(pages: int = 2, *, password: str | None = None) -> bytes:
     return data
 
 
+def make_text_pdf(pages: list[str], *, unicode_font: bool = False) -> bytes:
+    """A synthetic PDF with one page per string; ``""`` produces a blank page.
+
+    ``unicode_font`` embeds PyMuPDF's bundled ``cjk`` font (Droid Sans
+    Fallback), which maps the euro sign, curly quotes, dashes, the trademark
+    sign and CJK glyphs but has no U+2212 minus sign. The default Base-14
+    Helvetica covers ASCII only.
+    """
+    font = pymupdf.Font("cjk") if unicode_font else None
+    with pymupdf.open() as doc:
+        for text in pages:
+            page = doc.new_page()
+            if not text:
+                continue
+            if font is None:
+                page.insert_text((72, 72), text, fontsize=11)
+            else:
+                page.insert_font(fontname="F0", fontbuffer=font.buffer)
+                page.insert_text((72, 72), text, fontname="F0", fontsize=11)
+        data: bytes = doc.tobytes(garbage=3, deflate=True)
+    return data
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 

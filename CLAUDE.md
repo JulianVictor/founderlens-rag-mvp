@@ -82,7 +82,11 @@ python -m founderlens.corpus.validate   # needs local PDFs; not run in CI
 - The corpus is fixed by `data/manifest.json` (v1.0.0). Never commit PDFs,
   never edit hashes, sizes or page counts to make validation pass, and never
   substitute documents. Any change needs a new corpus version.
-- PyMuPDF is used only for validity checks and page counts until Stage 2.
+- PyMuPDF 1.28.2 is the only approved PDF parser: validity checks, page
+  counts and raw page-text extraction (`founderlens.ingestion.extract`). Do
+  not add another PDF library or OCR without authorization.
+- Extracted text in `data/processed/` and reports in `reports/` are
+  git-ignored and must never be committed.
 
 ## Evaluation integrity
 

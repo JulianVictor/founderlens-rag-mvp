@@ -6,7 +6,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | Stage | Title | Status |
 |------:|-------|--------|
 | 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
-| 2 | Document Ingestion Pipeline | Planned |
+| 2 | Document Ingestion Pipeline | In progress (Commit 2.1 implemented) |
 | 3 | Retrieval & Vector Search | Planned |
 | 4 | Grounded RAG Generation | Planned |
 | 5 | Cross-Document Reasoning & Guardrails | Planned |
@@ -44,10 +44,16 @@ only when its acceptance criteria are met and verified by the quality gates.
 
 **Goal.** Turn the fixed PDF corpus into clean, page-aware, chunked text.
 
-**Deliverables.** PyMuPDF page-level extraction from the verified corpus (the
-fetch with checksum verification already exists from Commit 1.2); text cleaning; configurable chunking (size, overlap)
-that preserves document ID and page range per chunk; processed output in
-`data/processed/`.
+**Deliverables.**
+- Commit 2.1: raw page-level PyMuPDF extraction from the verified corpus,
+  with a typed page record, stable page IDs, an atomic
+  `data/processed/pages.raw.jsonl`, an extraction diagnostics report and
+  documented layout observations ([ingestion.md](ingestion.md)).
+  *(implemented)*
+- Commit 2.2: deterministic text normalization. *(planned)*
+- Later: configurable chunking (size, overlap) that keeps the document ID
+  and page range per chunk; processed output in `data/processed/`.
+  *(planned)*
 
 **Acceptance criteria.** Ingestion is deterministic (same input → identical
 chunks); every chunk traces to a document and page(s); tests use synthetic

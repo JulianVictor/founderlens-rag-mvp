@@ -6,10 +6,11 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 1 complete.** The project foundation, a verified
-> four-document corpus and a human-reviewed, frozen evaluation dataset exist.
-> Ingestion, retrieval, generation, evaluation runs, the demo UI and deployment
-> are **not implemented yet**. See [Implementation status](#implementation-status).
+> **Current status: Stage 2 in progress (Commit 2.1).** Stage 1 is complete: the
+> project foundation, a verified four-document corpus and a human-reviewed,
+> frozen evaluation dataset. Raw page-level PDF extraction is implemented.
+> Text normalization, chunking, retrieval, generation, evaluation runs, the
+> demo UI and deployment are **not implemented yet**. See [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
 application.
@@ -58,8 +59,8 @@ Details and a Mermaid diagram: [docs/architecture.md](docs/architecture.md).
 | Packaging | setuptools, `pyproject.toml`, src layout | In use |
 | Quality | Ruff (lint + format), mypy (strict), pytest, pytest-cov | In use |
 | CI | GitHub Actions (Ubuntu, Python 3.12) | Configured |
-| PDF validity checks | PyMuPDF 1.28.2 | In use (page counts, readability only) |
-| PDF text extraction | PyMuPDF | Planned (Stage 2) |
+| PDF validity checks | PyMuPDF 1.28.2 | In use (page counts, readability) |
+| PDF text extraction | PyMuPDF 1.28.2 | In use (raw page-level text, Commit 2.1) |
 | Keyword retrieval | BM25 library (selected in Stage 3) | Planned |
 | Embeddings | Sentence Transformers | Planned (Stage 3) |
 | Vector index | FAISS CPU | Planned (Stage 3) |
@@ -85,6 +86,9 @@ python -m founderlens
 python -m founderlens.corpus.download
 python -m founderlens.corpus.validate
 python -m founderlens.evaluation.validate
+
+# Extract raw page-level text (data/processed/pages.raw.jsonl, git-ignored)
+python -m founderlens.ingestion.extract
 ```
 
 If the automated download fails, follow the manual steps in
@@ -110,7 +114,8 @@ python -m pytest -q
 python -m pytest -q --cov=founderlens --cov-report=term-missing
 python -m founderlens.evaluation.validate
 python -m founderlens.corpus.validate        # needs the PDFs locally
-$env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_corpus_real.py -q
+python -m founderlens.ingestion.extract     # needs the PDFs locally
+$env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_corpus_real.py tests/test_ingestion_real.py -q
 ```
 
 CI runs the same gates on pushes and pull requests to `main`
@@ -146,7 +151,22 @@ real-corpus checks: CI never downloads the financial PDFs.
 - Finalized evaluation protocol, including an LLM-as-a-Judge design
   ([docs/evaluation_protocol.md](docs/evaluation_protocol.md)).
 
-**Not implemented:** text extraction, cleaning, chunking, retrieval, vector
+**Implemented (Commit 2.1), see [docs/ingestion.md](docs/ingestion.md):**
+- `founderlens.ingestion`: a typed page record and raw page-level extraction
+  with PyMuPDF.
+  - One record per physical page, with stable IDs
+    (`nvda-fy2025-q3:p0001`) and the source metadata and SHA-256 from the
+    manifest.
+  - The command validates the corpus before extracting.
+  - Parser failures fail the run, naming the document and page.
+- `data/processed/pages.raw.jsonl` is published atomically and is
+  byte-identical across reruns with the same PDFs, PyMuPDF version and
+  configuration.
+- `reports/extraction_report.json` holds page and document diagnostics and
+  automatic heuristic warnings. Manually observed table-layout problems are
+  documented separately.
+
+**Not implemented:** text normalization, chunking, retrieval, vector
 indexing, generation, citations, abstention, the evaluation harness and judge,
 the Streamlit demo, deployment. No evaluation results exist yet.
 
@@ -175,6 +195,10 @@ replace PyMuPDF. This note is not legal advice.
 
 ## Limitations
 
+- Extracted text is raw. Financial tables come out as lines of text, not
+  structured tables. Values are not reliably linked to their period columns
+  in reconciliation tables or in tables that span pages
+  ([docs/ingestion.md](docs/ingestion.md#manual-extraction-observations)).
 - Fixed, curated corpus only; no user uploads. The source PDFs are not
   redistributed; users download them from the official sites.
 - Evaluation labels were written by Claude Code and reviewed by a single

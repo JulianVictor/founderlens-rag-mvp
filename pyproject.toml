@@ -12,9 +12,10 @@ requires-python = ">=3.12,<3.13"
 # pinned exactly for reproducibility. Development tools live in
 # requirements-dev.txt (single source of truth, pinned).
 dependencies = [
-    # PDF validity checks and page counts (Commit 1.2). 1.28.x has no transitive
-    # dependencies; 2.x pulls in onnxruntime/numpy/networkx, which Stage 1 does
-    # not need. License: AGPL-3.0 or Artifex commercial — see README.
+    # PDF validity checks and page counts (Commit 1.2) and raw page-text
+    # extraction (Commit 2.1). 1.28.x has no transitive dependencies; 2.x pulls
+    # in onnxruntime/numpy/networkx, which this project does not need.
+    # License: AGPL-3.0 or Artifex commercial — see README.
     "pymupdf==1.28.2",
 ]
 classifiers = [
