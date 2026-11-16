@@ -53,6 +53,32 @@ def make_text_pdf(pages: list[str], *, unicode_font: bool = False) -> bytes:
     return data
 
 
+PlacedText = tuple[float, float, str]
+LAYOUT_FONTSIZE = 9.0
+
+
+def place_right(x_right: float, y: float, text: str) -> PlacedText:
+    """Position ``text`` so it ends at ``x_right`` (right-aligned, like table numbers)."""
+    width = pymupdf.get_text_length(text, fontname="helv", fontsize=LAYOUT_FONTSIZE)
+    return (x_right - width, y, text)
+
+
+def place_center(x_center: float, y: float, text: str) -> PlacedText:
+    width = pymupdf.get_text_length(text, fontname="helv", fontsize=LAYOUT_FONTSIZE)
+    return (x_center - width / 2, y, text)
+
+
+def make_layout_pdf(pages: list[list[PlacedText]]) -> bytes:
+    """A synthetic US-letter PDF with text placed at exact (x, baseline) positions."""
+    with pymupdf.open() as doc:
+        for items in pages:
+            page = doc.new_page(width=612, height=792)
+            for x, y, text in items:
+                page.insert_text((x, y), text, fontsize=LAYOUT_FONTSIZE)
+        data: bytes = doc.tobytes(garbage=3, deflate=True)
+    return data
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 

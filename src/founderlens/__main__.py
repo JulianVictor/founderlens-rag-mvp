@@ -44,7 +44,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ):
         status = "present" if path.is_dir() else "not created"
         print(f"{label:<16}{path} ({status})")
-    print("Status: OK (raw page extraction implemented; no retrieval or generation implemented)")
+    print(
+        "Status: OK (page extraction and normalization implemented; "
+        "no chunking, retrieval or generation implemented)"
+    )
     return 0
 
 

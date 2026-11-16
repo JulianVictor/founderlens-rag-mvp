@@ -6,7 +6,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | Stage | Title | Status |
 |------:|-------|--------|
 | 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
-| 2 | Document Ingestion Pipeline | In progress (Commit 2.1 implemented) |
+| 2 | Document Ingestion Pipeline | In progress (Commits 2.1–2.2 implemented) |
 | 3 | Retrieval & Vector Search | Planned |
 | 4 | Grounded RAG Generation | Planned |
 | 5 | Cross-Document Reasoning & Guardrails | Planned |
@@ -50,7 +50,10 @@ only when its acceptance criteria are met and verified by the quality gates.
   `data/processed/pages.raw.jsonl`, an extraction diagnostics report and
   documented layout observations ([ingestion.md](ingestion.md)).
   *(implemented)*
-- Commit 2.2: deterministic text normalization. *(planned)*
+- Commit 2.2: conservative, idempotent text normalization and
+  word-coordinate table candidates (`structured` / `uncertain` / `fallback`)
+  in `data/processed/pages.normalized.jsonl`, with a normalization report.
+  *(implemented)*
 - Later: configurable chunking (size, overlap) that keeps the document ID
   and page range per chunk; processed output in `data/processed/`.
   *(planned)*

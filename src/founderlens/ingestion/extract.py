@@ -35,7 +35,8 @@ import os
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -236,13 +237,13 @@ class CorpusExtraction:
         return tuple(r for d in self.documents for r in d.records)
 
 
-def extract_document(
-    entry: DocumentEntry, pdf_path: Path, config: ExtractionConfig = BASELINE_CONFIG
-) -> DocumentExtraction:
-    """Extract every physical page of one verified PDF, in order.
+@contextmanager
+def open_verified_pdf(entry: DocumentEntry, pdf_path: Path) -> Iterator[pymupdf.Document]:
+    """Open one corpus PDF from memory after re-checking its SHA-256.
 
-    Raises :class:`ExtractionError` naming the document (and page, where
-    relevant) on any read, integrity, parse or page-count failure.
+    Yields a PyMuPDF document whose page count equals the manifest's. The file
+    on disk is only read. Raises :class:`ExtractionError` naming the document
+    on any read, integrity, parse, encryption, repair or page-count failure.
     """
     doc_id = entry.document_id
     try:
@@ -266,26 +267,23 @@ def extract_document(
                 raise ExtractionError([f"{doc_id}: PDF is password-protected or encrypted"])
             if doc.is_repaired:
                 raise ExtractionError([f"{doc_id}: PDF structure is damaged (needed repair)"])
-            pdf_page_count = int(doc.page_count)
-            if pdf_page_count != entry.page_count:
+            if int(doc.page_count) != entry.page_count:
                 raise ExtractionError(
                     [
-                        f"{doc_id}: PDF has {pdf_page_count} pages, "
+                        f"{doc_id}: PDF has {doc.page_count} pages, "
                         f"manifest expects {entry.page_count}"
                     ]
                 )
-            records = tuple(
-                _extract_page(doc, entry, number, config) for number in range(1, pdf_page_count + 1)
-            )
+            yield doc
     finally:
         pymupdf.TOOLS.reset_mupdf_warnings()
-    return DocumentExtraction(entry=entry, pdf_page_count=pdf_page_count, records=records)
 
 
-def _extract_page(
-    doc: pymupdf.Document, entry: DocumentEntry, page_number: int, config: ExtractionConfig
-) -> PageRecord:
-    where = f"{entry.document_id} page {page_number}"
+def extract_page_text(
+    doc: pymupdf.Document, document_id: str, page_number: int, config: ExtractionConfig
+) -> str:
+    """Raw text of one physical page; a parser failure names the document and page."""
+    where = f"{document_id} page {page_number}"
     try:
         page = doc.load_page(page_number - 1)
         text: object = page.get_text(config.output, flags=config.flags, sort=config.sort)
@@ -293,6 +291,30 @@ def _extract_page(
         raise ExtractionError([f"{where}: text extraction failed: {exc}"]) from exc
     if not isinstance(text, str):
         raise ExtractionError([f"{where}: parser returned {type(text).__name__}, not text"])
+    return text
+
+
+def extract_document(
+    entry: DocumentEntry, pdf_path: Path, config: ExtractionConfig = BASELINE_CONFIG
+) -> DocumentExtraction:
+    """Extract every physical page of one verified PDF, in order.
+
+    Raises :class:`ExtractionError` naming the document (and page, where
+    relevant) on any read, integrity, parse or page-count failure.
+    """
+    with open_verified_pdf(entry, pdf_path) as doc:
+        pdf_page_count = int(doc.page_count)
+        records = tuple(
+            _extract_page(doc, entry, number, config) for number in range(1, pdf_page_count + 1)
+        )
+    return DocumentExtraction(entry=entry, pdf_page_count=pdf_page_count, records=records)
+
+
+def _extract_page(
+    doc: pymupdf.Document, entry: DocumentEntry, page_number: int, config: ExtractionConfig
+) -> PageRecord:
+    where = f"{entry.document_id} page {page_number}"
+    text = extract_page_text(doc, entry.document_id, page_number, config)
     try:
         return PageRecord.build(
             document_id=entry.document_id,

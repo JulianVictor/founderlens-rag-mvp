@@ -6,11 +6,12 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 2 in progress (Commit 2.1).** Stage 1 is complete: the
-> project foundation, a verified four-document corpus and a human-reviewed,
-> frozen evaluation dataset. Raw page-level PDF extraction is implemented.
-> Text normalization, chunking, retrieval, generation, evaluation runs, the
-> demo UI and deployment are **not implemented yet**. See [Implementation status](#implementation-status).
+> **Current status: Stage 2 in progress (Commits 2.1–2.2).** Stage 1 is
+> complete: the project foundation, a verified four-document corpus and a
+> human-reviewed, frozen evaluation dataset. Raw page-level PDF extraction,
+> conservative text normalization and word-coordinate table candidates are
+> implemented. Chunking, retrieval, generation, evaluation runs, the demo UI
+> and deployment are **not implemented yet**. See [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
 application.
@@ -89,6 +90,8 @@ python -m founderlens.evaluation.validate
 
 # Extract raw page-level text (data/processed/pages.raw.jsonl, git-ignored)
 python -m founderlens.ingestion.extract
+# Normalize text and detect table candidates (pages.normalized.jsonl, git-ignored)
+python -m founderlens.ingestion.normalize
 ```
 
 If the automated download fails, follow the manual steps in
@@ -166,7 +169,25 @@ real-corpus checks: CI never downloads the financial PDFs.
   automatic heuristic warnings. Manually observed table-layout problems are
   documented separately.
 
-**Not implemented:** text normalization, chunking, retrieval, vector
+**Implemented (Commit 2.2), see [docs/ingestion.md](docs/ingestion.md#commit-22-layout-aware-normalization):**
+- Conservative, idempotent text normalization:
+  - LF line endings, NFC, and trailing whitespace removed;
+  - blank-line runs collapsed;
+  - column-alignment spaces preserved.
+- Word-coordinate table candidates with explicit `structured` / `uncertain`
+  / `fallback` status.
+  - Columns are assigned by position, so empty cells stay in place and period
+    headers stay with their columns.
+  - Nothing is inferred: no headers, units or zero values are invented.
+  - PyMuPDF's `find_tables` was evaluated and rejected for this corpus.
+- `data/processed/pages.normalized.jsonl` (one record per page, raw text kept
+  separately) and `reports/normalization_report.json`.
+  - On corpus v1.0.0 it finds 58 table candidates: 21 structured,
+    35 uncertain and 2 fallback.
+  - "Structured" means the automatic checks passed, not that the
+    associations are verified.
+
+**Not implemented:** chunking, retrieval, vector
 indexing, generation, citations, abstention, the evaluation harness and judge,
 the Streamlit demo, deployment. No evaluation results exist yet.
 
@@ -195,9 +216,11 @@ replace PyMuPDF. This note is not legal advice.
 
 ## Limitations
 
-- Extracted text is raw. Financial tables come out as lines of text, not
-  structured tables. Values are not reliably linked to their period columns
-  in reconciliation tables or in tables that span pages
+- Table extraction is heuristic and corpus-tuned, not production-grade.
+  Most table candidates are `uncertain`. Tables that span pages, wrapped
+  cells and labels, and multi-level headers are not reconstructed. Values in
+  page text are not reliably linked to their period columns in
+  reconciliation tables or in tables that span pages
   ([docs/ingestion.md](docs/ingestion.md#manual-extraction-observations)).
 - Fixed, curated corpus only; no user uploads. The source PDFs are not
   redistributed; users download them from the official sites.

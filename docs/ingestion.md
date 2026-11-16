@@ -1,8 +1,13 @@
-# Ingestion: page-aware extraction (Commit 2.1)
+# Ingestion: page-aware extraction and normalization
 
-> **Scope.** This commit turns the four verified corpus PDFs into raw,
-> page-level text records. It does **not** clean or normalize text, chunk it,
-> index it, or reconstruct tables. Those are later commits (see
+> **Scope.**
+> - **Commit 2.1** turns the four verified corpus PDFs into raw, page-level
+>   text records.
+> - **Commit 2.2** adds conservative text normalization and word-coordinate
+>   table candidates; see
+>   [Commit 2.2](#commit-22-layout-aware-normalization).
+>
+> Neither commit chunks or indexes text (see
 > [Remaining ingestion work](#remaining-ingestion-work)).
 
 ## Running it
@@ -10,6 +15,7 @@
 ```powershell
 python -m founderlens.corpus.download     # once, if data/raw is empty
 python -m founderlens.ingestion.extract
+python -m founderlens.ingestion.normalize # Commit 2.2; needs the raw artifact
 ```
 
 The command:
@@ -167,21 +173,204 @@ extracted correctly.
 | Headers, footers, footnotes | Every Alphabet page ends with a standalone page-number line (`1` … `10`); NVIDIA pages have none. Footnote markers stay attached to labels (`year over year(1)`, `Total revenues(1)`, `(A)`), and footnote text follows its table. |
 | Bullets and symbols | Alphabet's bullet points are extracted as `•`. No bullet character appears in the text of NVIDIA's highlight lines. Curly quotes, dashes, ™, ® and © are preserved. |
 
-## Financial table limitations
+## Financial table limitations (raw text)
 
-- The extractor produces lines of text, not a table structure. Cells, column
-  headers and periods are not linked, and nothing in this commit tries to
-  link them.
+- The raw extractor produces lines of text, not a table structure. In
+  `pages.raw.jsonl`, cells, column headers and periods are not linked.
 - Downstream steps must not assume that a number's position on a line
   identifies its period or column. That is unreliable for reconciliation
   tables and tables that span pages.
-- Normalization (Commit 2.2) must not collapse the padding spaces blindly
-  without considering their effect on table rows.
+- Commit 2.2 adds a separate, conservative table view (below). It does not
+  change the raw text.
+
+## Commit 2.2: layout-aware normalization
+
+```powershell
+python -m founderlens.ingestion.normalize
+```
+
+**Inputs:**
+- the corpus, validated first;
+- `data/processed/pages.raw.jsonl`, validated against the manifest.
+
+For every page, the command re-extracts the raw text with the Commit 2.1
+configuration and requires it to equal the raw record. A stale raw artifact,
+or changed extraction settings, therefore fail the run with
+"re-run `python -m founderlens.ingestion.extract`".
+
+**Outputs**, both git-ignored and published atomically after validation:
+- `data/processed/pages.normalized.jsonl`, one record per physical page;
+- `reports/normalization_report.json`.
+
+The raw artifact is read only.
+
+### Text normalization rules
+
+`normalize_text` is deterministic and idempotent:
+- CR and CRLF are converted to LF.
+- Unicode is normalized to **NFC**. This only composes canonical
+  equivalents; compatibility forms (NFKC/NFKD) are not used, so `™`,
+  ligatures and similar characters are untouched.
+- Trailing whitespace is removed from each line.
+- Runs of blank lines are reduced to one, and leading and trailing blank lines
+  are removed.
+
+Leading and internal spaces are **kept**, because the layout-sorted text uses
+them for column alignment. Nothing is lowercased, dehyphenated, removed as a
+header or footer, or rewritten.
+
+On corpus v1.0.0 the raw text has no CR characters, no non-NFC text and no
+trailing whitespace. The whole change, 142,270 → 142,067 characters, comes
+from collapsing redundant blank lines. That reduction is not evidence of
+better extraction quality.
+
+### Table investigation: why not `Page.find_tables()`
+
+On every corpus page, PyMuPDF 1.28.2's `find_tables` was compared with the
+word-coordinate approach.
+
+- **`strategy="lines"` (default)** found few and wrong tables.
+  - Alphabet statements have only horizontal rules, so each row's label and
+    values merged into a single cell (`Marketable securities 86,868`), with
+    the other cells `None`.
+  - On NVIDIA pages, decorative page boxes became "tables" whose header cell
+    held about 30 lines of prose.
+  - Many statement pages returned none.
+- **`strategy="text"`** returned exactly one table per page on all 40 pages,
+  prose included.
+  - It cut words across columns (`Cost of revenu` | `e`).
+  - It merged a value with the next column's `$` (`20,687 $`).
+  - It did place NVIDIA's `July 28,` header in the correct column, which shows
+    the word coordinates carry the column structure.
+- `find_tables` also prints an advisory line about another package on every
+  call. It is not used.
+
+### Selected method: word-coordinate table candidates (`founderlens.ingestion.tables`)
+
+This is a bounded method, not a general table parser. The thresholds are
+fixed in `TableConfig` and recorded in the report.
+
+1. Words from `Page.get_text("words")` are grouped into visual lines by
+   vertical overlap against the line's first word. A label printed a few
+   points below its values therefore stays on their row.
+2. Lines are split into segments at gaps wider than 5 pt. A lone `$` joins
+   the following number. Words with no gap are joined without a space
+   (`(1)%`).
+3. A line with a long run of closely spaced words is prose and ends a table.
+4. A candidate starts at a line that has a stub label in the left 30% of the
+   page and a numeric cell. It grows over non-prose lines and stops after a
+   large gap or three lines without values.
+5. **Columns** are the union of overlapping x-ranges of the value cells. A
+   row with two cells in one column makes the table `fallback`.
+6. **Header lines** are assigned bottom-up, by x-overlap with the columns.
+   - A segment covering several columns becomes a spanning header, recorded
+     with the columns it physically overlaps.
+   - Collection stops at prose, a large gap, a page-centred title, a
+     stub-only line above the header block, or a line with value-like text.
+7. **Unit statements** (`in millions/billions/thousands`) are taken from
+   inside the table, or from the nearest one at most 110 pt above it. Only
+   the matching text segment is kept. Units are never inferred.
+
+**Table record:**
+- `table_id` (`{page_id}:tNN`, ordered top-down), `page_id`, `document_id`,
+  `page_number`, `bounding_box`;
+- `structure_status`, `column_count`, `column_headers` (multi-line headers
+  joined with `\n`, or `null` when none was found), `spanning_headers`,
+  `stub_header`, `unit_statements`;
+- `rows`, each a `label` plus `cells`. `null` is an empty position, never
+  zero; `""` as a label means no stub text was found;
+- `warnings`.
+
+**Status values** come from automatic structural checks, not semantic
+verification:
+
+| Status | Meaning |
+|--------|---------|
+| `structured` | Rows and columns assigned without collisions, every column has header text, every row with values has a label, and a nearby unit statement exists. Financial associations are **not** independently verified. |
+| `uncertain` | Rows and columns assigned, but at least one check failed. `warnings` gives the codes: `no_header_rows`, `columns_without_header`, `rows_without_label`, `values_above_first_row`, `spanning_header_ranges_ambiguous`, `header_text_between_columns`, `no_unit_statement_on_page`. Not verified evidence. |
+| `fallback` | No consistent column structure (`column_collision`). Only the bounding box and warnings are kept; `normalized_text` is the source. |
+
+**Normalized page record:**
+- the raw identity and metadata fields;
+- `extraction_status` and `raw_character_count`;
+- `normalized_text` and `normalized_character_count`;
+- `tables` and `table_text_overlap`;
+- `normalization_warnings`, one entry for each page with an empty page,
+  uncertain tables or fallback tables.
+
+`normalized_text` always holds the whole page, table text included.
+`tables` is an additional view. `table_text_overlap` is `true` when a table
+carries rows, so consumers must not concatenate the two without
+deduplicating.
+
+### Results on corpus v1.0.0 (`python -m founderlens.ingestion.normalize`)
+
+| Document | Pages | Characters raw → normalized | Table candidates | Structured | Uncertain | Fallback |
+|----------|------:|---------------------------:|-----------------:|-----------:|----------:|---------:|
+| `goog-2024-q3` | 10 | 36,137 → 36,105 | 14 | 7 | 7 | 0 |
+| `goog-2024-q4` | 10 | 38,414 → 38,376 | 16 | 7 | 9 | 0 |
+| `nvda-fy2025-q3` | 10 | 32,946 → 32,876 | 15 | 2 | 13 | 0 |
+| `nvda-fy2025-q4` | 10 | 34,773 → 34,710 | 13 | 5 | 6 | 2 |
+| **Total** | **40** | **142,270 → 142,067** | **58** | **21** | **35** | **2** |
+
+There are no empty pages. As an automated consistency check, all 296
+structured rows with values match a raw layout line containing the same
+label followed by the same values in the same order.
+
+There is no labelled table ground truth, so **no table-accuracy percentage
+is claimed**.
+
+### Commit 2.2 before-and-after inspection
+
+This inspection was performed by the implementer (Claude Code), not an
+independent review. Selected page regions were rendered and compared with
+the Commit 2.1 raw text and the Commit 2.2 table records. Pages were chosen by
+layout type, not by evaluation questions:
+- Alphabet Q3 pages 1 and 9;
+- Alphabet Q4 pages 1, 6 and 10;
+- NVIDIA Q3 pages 1, 4 and 8;
+- NVIDIA Q4 pages 1 and 7.
+
+| Problem | Page | Raw text (2.1) | Normalized / table view (2.2) | Verdict |
+|---------|------|----------------|-------------------------------|---------|
+| A. Period headers out of column order | `nvda-fy2025-q3` p8 | `October  October  October  October … July 28,` on one line, `27, 29, 27, 29,` on the next | `column_headers` = `October\n27,\n2024`, `July 28,\n2024`, `October\n29,\n2023`, …; spans `Three Months Ended` (cols 0–2) and `Nine Months Ended` (cols 3–4), matching the render | **Improved.** The table stays `uncertain` only because no unit statement is near it. |
+| B. Label after its values | `nvda-fy2025-q3` p8 | `$ 292 … $ 633  Sales, general and administrative` | row `Sales, general and administrative` → `$ 292, $ 282, $ 240, $ 822, $ 633` | **Improved.** The label is 5 pt below its values in the PDF, and grouping now keeps them together. |
+| C. Empty cells | `goog-2024-q3` p9 | `$ 76,693  $ 88,268   $ 89,268  15 %  0 %  (1)%  16 %`, with no gap marker | `Total revenues(1)` → `…, null, "$ 89,268", "15 %", "0 %", "(1)%", "16 %"`, with the blank "Less FX Effect" cell kept as `null` | **Improved for cells.** Spanning headers here physically overlap columns 3–6 and 4–6, while the true spans are 2–7 and 4–7, so the table is `uncertain` (`spanning_header_ranges_ambiguous`). |
+| D. Table continues across pages | `nvda-fy2025-q3` p4 | Rows from `Operating Income` with no headers or units | Table `uncertain` with `no_header_rows` and `no_unit_statement_on_page`; headers `null` | **Detected, not resolved.** Headers from page 3 are not inherited, by design. |
+| E. Wrapped cells | `nvda-fy2025-q3` p1 | `Down 0.5   Up 0.6` above `Gross margin`, `pts  pts` below | Separate label-less rows with `Down 0.5`/`Up 0.6` and `pts`/`pts` in the Q/Q and Y/Y columns; `rows_without_label` → `uncertain` | **Unresolved but contained.** Positions are kept and nothing is merged. On `nvda-fy2025-q4` p1, a wrapped `Down 1.6 pts` sits within 5 pt of `76.0%`, which makes both summary tables `fallback`. |
+| F. Layout whitespace | All pages | Column padding with runs of spaces; many blank lines | Padding kept for alignment; blank-line runs collapsed | **Partly changed, on purpose.** Internal spaces are preserved. |
+| Titles absorbed into headers (found during this commit) | `goog-2024-q4` p6 | n/a | An early prototype read `Alphabet Inc.` and `(In millions)` as the first column's header. Page-centred titles now end header collection. | **Fixed before publishing.** |
+
+Financial notation is preserved in cells: `$`, thousands separators,
+decimals, `%`, parentheses for negatives, `-` and `--` placeholders, and
+footnote markers in labels (`Operating margin(2)`, `(A)`).
+
+### Known unresolved layouts
+
+- Some table candidates have no header lines on their own page:
+  - NVIDIA statements continued from a previous page (Q3 pages 4, 5, 7 and 9;
+    Q4 pages 7, 8 and 9);
+  - the lower parts of Alphabet tables that a large vertical gap splits into
+    a second candidate (pages 4 and 8 of both quarters).
+
+  Headers and units are not inherited.
+- Wrapped row labels are left as label-only rows plus label-less value rows.
+  For example, `Weighted average shares used in per share` / `computation:`
+  and NVIDIA cash flow wrapped labels.
+- Alphabet constant-currency reconciliation tables (pages 9–10) have
+  multi-level headers whose column ranges cannot be established from
+  positions alone.
+- NVIDIA Q4 summary tables (page 1) are `fallback` because of wrapped cells.
+- Spanning header column ranges are positional, even in `structured` tables.
 
 ## Remaining ingestion work
 
-- **Commit 2.2:** deterministic text normalization from `pages.raw.jsonl`.
-- **Later Stage 2 commits:** configurable chunking that keeps document and
-  page spans, with output in `data/processed/`.
+- **Commit 2.3, chunking:** build retrieval chunks from `normalized_text`
+  and the table view without duplicating content, since
+  `table_text_overlap` marks pages where both carry the same values.
+  - Keep document and page provenance.
+  - Use only `structured` tables as row-level evidence, if at all; treat
+    `uncertain` and `fallback` regions as plain text.
+  - Do not split table rows across chunks.
 
 Retrieval, generation and evaluation are not implemented.
