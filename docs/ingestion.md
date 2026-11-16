@@ -214,15 +214,19 @@ The raw artifact is read only.
 - Trailing whitespace is removed from each line.
 - Runs of blank lines are reduced to one, and leading and trailing blank lines
   are removed.
+- Non-empty text ends with exactly one final newline (LF); empty text stays
+  empty.
 
 Leading and internal spaces are **kept**, because the layout-sorted text uses
 them for column alignment. Nothing is lowercased, dehyphenated, removed as a
 header or footer, or rewritten.
 
 On corpus v1.0.0 the raw text has no CR characters, no non-NFC text and no
-trailing whitespace. The whole change, 142,270 → 142,067 characters, comes
-from collapsing redundant blank lines. That reduction is not evidence of
-better extraction quality.
+trailing whitespace, and no page has leading or trailing blank lines. The net
+change, 142,270 → 142,067 characters (−203), has two parts: 243 redundant
+interior blank lines are removed (−243 characters), and a final newline is
+added to each of the 40 pages, whose raw text does not end with one (+40).
+That reduction is not evidence of better extraction quality.
 
 ### Table investigation: why not `Page.find_tables()`
 
