@@ -1,1 +1,48 @@
-.venv
+# --- Virtual environments ---
+.venv/
+venv/
+
+# --- Python bytecode and caches ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Coverage outputs ---
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Build and distribution outputs ---
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# --- Local environment and secrets (keep .env.example tracked) ---
+.env
+.env.*
+!.env.example
+
+# --- Local data and generated outputs ---
+# Only these subdirectories are ignored. data/manifest.json, data/README.md,
+# evaluation datasets and synthetic fixtures must remain trackable.
+data/raw/
+data/processed/
+artifacts/
+reports/
+
+# --- IDE / editor configuration ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Operating system metadata ---
+.DS_Store
+Thumbs.db
+desktop.ini

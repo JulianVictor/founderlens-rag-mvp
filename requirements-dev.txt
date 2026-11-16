@@ -1,0 +1,29 @@
+# Development tool dependencies for FounderLens AI RAG MVP.
+#
+# All versions are pinned (direct and transitive) for reproducible quality
+# gates. Verified on CPython 3.12.10 (Windows) on 2026-11-16.
+#
+# Install:  python -m pip install -r requirements-dev.txt
+# Then:     python -m pip install -e .
+#
+# Runtime dependencies are NOT listed here; they belong in pyproject.toml
+# and are added only in the commit that first needs them.
+
+# --- Direct development tools ---
+pytest==9.2.0
+pytest-cov==7.1.0
+ruff==0.17.5
+mypy==2.4.1
+
+# --- Transitive dependencies (pinned for reproducibility) ---
+ast-serialize==0.13.1
+colorama==0.4.6 ; sys_platform == "win32"
+coverage==7.17.3
+iniconfig==2.3.1
+librt==0.16.0 ; platform_python_implementation != "PyPy"
+mypy-extensions==1.2.0
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.7.0
+pygments==2.21.0
+typing-extensions==4.16.0
