@@ -1,4 +1,4 @@
-"""Explicit real benchmark: BM25 and dense on V2, development split only.
+"""Explicit real benchmark: BM25, dense and hybrid RRF on V2, development split only.
 
 Skipped by default: needs the corpus PDFs (``FOUNDERLENS_REAL_CORPUS=1``) and
 the pinned model in the local Hugging Face cache (``FOUNDERLENS_REAL_MODEL=1``).
@@ -8,6 +8,8 @@ denominators and reproducibility; no quality threshold is asserted. Run::
 
     $env:FOUNDERLENS_REAL_CORPUS = "1"; $env:FOUNDERLENS_REAL_MODEL = "1"
     python -m pytest tests/test_evaluation_benchmark_real.py -q
+
+The temporary project is built once per module and shared by both tests.
 """
 
 from __future__ import annotations
@@ -21,8 +23,10 @@ import pytest
 
 from founderlens.config import Settings, load_settings
 from founderlens.corpus.manifest import load_manifest
+from founderlens.evaluation import metrics as m
 from founderlens.evaluation.benchmark import (
     DEFAULT_EVALUATION_CONFIG,
+    EvaluationConfig,
     build_systems,
     deterministic_view,
     load_dev_split,
@@ -51,7 +55,10 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def test_real_development_benchmark(tmp_path: Path) -> None:
+@pytest.fixture(scope="module")
+def real_project(tmp_path_factory: pytest.TempPathFactory) -> tuple[Settings, dict[str, str]]:
+    """Corpus copy, extraction, chunking and V2 embeddings in a temporary project."""
+    tmp_path = tmp_path_factory.mktemp("benchmark")
     source = load_settings()
     manifest = load_manifest(source.corpus_manifest_path)
     originals = {d.filename: _sha(source.raw_data_dir / d.filename) for d in manifest.documents}
@@ -70,7 +77,15 @@ def test_real_development_benchmark(tmp_path: Path) -> None:
     run_build_collection(settings, encoder)
     v2 = load_named_collection(settings, "v2")
     run_build(settings, encoder, EmbeddingConfig(), v2, collection_path(settings, "v2"))
+    return settings, originals
 
+
+def test_real_development_benchmark(
+    real_project: tuple[Settings, dict[str, str]], tmp_path: Path
+) -> None:
+    settings, originals = real_project
+    source = load_settings()
+    v2 = load_named_collection(settings, "v2")
     split = load_dev_split(settings.evaluation_dir, settings.corpus_manifest_path)
     assert all(q.question_id.startswith("dev-") for q in split.questions)
     collection, systems, load_ms = build_systems(settings)
@@ -115,5 +130,61 @@ def test_real_development_benchmark(tmp_path: Path) -> None:
     json_path, md_path = write_reports(report, tmp_path / "reports")
     assert json_path.is_file()
     assert "Primary results" in md_path.read_text("utf-8")
+    for filename, digest in originals.items():
+        assert _sha(source.raw_data_dir / filename) == digest
+
+
+def test_real_three_way_benchmark(
+    real_project: tuple[Settings, dict[str, str]], tmp_path: Path
+) -> None:
+    settings, originals = real_project
+    source = load_settings()
+    split = load_dev_split(settings.evaluation_dir, settings.corpus_manifest_path)
+    collection, systems, load_ms = build_systems(settings, include_hybrid=True)
+    assert [s.method for s in systems] == ["bm25", "dense", "hybrid"]
+    baseline = run_benchmark(split, systems[:2], collection).report  # same temporary project
+    config = EvaluationConfig(include_hybrid=True)
+    first = run_benchmark(
+        split, systems, collection, config, load_timings_ms=load_ms, historical=baseline
+    )
+    second = run_benchmark(split, systems, collection, config, historical=baseline)
+    assert first.complete
+    assert second.complete
+    assert deterministic_view(first.report) == deterministic_view(second.report)
+
+    report = first.report
+    assert report["dataset"]["questions"] == 24
+    assert report["evaluation_config_id"] != DEFAULT_EVALUATION_CONFIG.config_id
+    assert report["historical_baseline_config_id"] == DEFAULT_EVALUATION_CONFIG.config_id
+    assert report["baseline_reproducibility"]["reproduced"] is True
+    assert report["baseline_reproducibility"]["max_abs_score_difference"] == 0.0
+    assert report["baseline_reproducibility"]["scores_identical"] is True
+    assert report["status"]["hybrid_components_agree"] is True
+    identities = report["systems"]
+    assert identities["hybrid"]["component_config_ids"] == {
+        "bm25": identities["bm25"]["retriever_config_id"],
+        "dense": identities["dense"]["retriever_config_id"],
+    }
+    assert identities["hybrid"]["matrix_sha256"] == identities["dense"]["matrix_sha256"]
+
+    answerable = [q for q in split.questions if q.answerable]
+    facts = sum(len(q.required_facts) for q in answerable)
+    diagnostics = report["hybrid_diagnostics"]
+    for k, counts in diagnostics["aggregates"]["fact_outcome_counts"]["by_k"].items():
+        assert counts["facts"] == facts
+        assert sum(counts[o] for o in m.FACT_OUTCOMES) == facts, k  # exclusive, exhaustive
+    for record in report["per_question"]:
+        for entry in record["systems"].values():
+            assert entry["status"] == "ok"
+            assert entry["returned"] == 10
+        if not record["answerable"]:
+            continue
+        union = diagnostics["per_question"][record["question_id"]]["pool"]["union_fact_coverage"]
+        for method in ("bm25", "dense", "hybrid"):  # the pool contains every top-10 list
+            assert record["systems"][method]["metrics"]["fact_coverage"]["10"] <= union
+
+    json_path, md_path = write_reports(report, tmp_path / "reports")
+    assert json_path.name == "retrieval_benchmark_three_way.dev.json"
+    assert "Candidate-pool coverage" in md_path.read_text("utf-8")
     for filename, digest in originals.items():
         assert _sha(source.raw_data_dir / filename) == digest

@@ -128,3 +128,29 @@ def test_paired_comparison_counts_and_skips_undefined_pairs() -> None:
 def test_percentile() -> None:
     assert m.percentile([], 50) is None
     assert m.percentile([1.0, 2.0, 3.0, 4.0], 50) == 2.5
+
+
+def test_facts_covered_by_an_unordered_page_set() -> None:
+    assert m.facts_covered_by_pages({(A, 3)}, GOLD) == ("f1",)  # alternative page counts
+    assert m.facts_covered_by_pages([(B, 1), (A, 1), (A, 1)], GOLD) == ("f1", "f2")
+    assert m.facts_covered_by_pages(set(), GOLD) == ()
+
+
+@pytest.mark.parametrize(
+    ("k", "expected"),
+    [
+        (1, {"f1": m.FUSION_CUTOFF_FAILURE, "f2": m.CANDIDATE_RETRIEVAL_FAILURE}),
+        (2, {"f1": m.RETAINED, "f2": m.CANDIDATE_RETRIEVAL_FAILURE}),
+    ],
+)
+def test_fact_outcomes_are_exclusive_per_fact(k: int, expected: dict[str, str]) -> None:
+    fused = [(A, 2), (A, 3)]  # f1 via its alternative page at rank 2; f2 never retrieved
+    pool = {(A, 2), (A, 3), (B, 2)}
+    outcomes = m.classify_facts(fused, pool, GOLD, k)
+    assert outcomes == expected
+    assert set(outcomes.values()) <= set(m.FACT_OUTCOMES)
+
+
+def test_fact_outcomes_reject_results_outside_the_pool() -> None:
+    with pytest.raises(ValueError, match="outside the candidate pool"):
+        m.classify_facts([(B, 1)], {(A, 1)}, GOLD, 1)

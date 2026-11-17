@@ -16,8 +16,9 @@ reproducible evaluation.
 > - exact dense (cosine) retrieval over V2;
 > - a deterministic **development-split** retrieval benchmark comparing the
 >   two;
-> - reciprocal-rank-fusion hybrid retrieval over the same V2 collection
->   (implemented, **not yet evaluated**).
+> - reciprocal-rank-fusion hybrid retrieval over the same V2 collection,
+>   compared with both baselines on the development split (no default
+>   retriever selected).
 >
 > Retrieval quality is measured only for BM25 and dense, on the 19
 > answerable development questions; the held-out split has not been used. Generation, answer
@@ -122,7 +123,10 @@ python -m founderlens.retrieval.dense --query "How quickly is the AI chip maker'
 python -m founderlens.retrieval.dense --smoke   # dense and BM25 on V2 -> reports/
 # Development-split retrieval benchmark (BM25 and dense, both on V2)
 python -m founderlens.evaluation.benchmark      # reports/retrieval_benchmark.dev.{json,md}
-# Hybrid retrieval (RRF of BM25 and dense, both on V2; not yet evaluated)
+# Three-way benchmark (adds hybrid RRF). Run the two-method command above first:
+# it reads that git-ignored report as its baseline and never rewrites it.
+python -m founderlens.evaluation.benchmark --include-hybrid  # reports/retrieval_benchmark_three_way.dev.*
+# Hybrid retrieval (RRF of BM25 and dense, both on V2)
 python -m founderlens.retrieval.hybrid --query "NVIDIA Blackwell"
 python -m founderlens.retrieval.hybrid --smoke  # reports/hybrid_smoke_report.<id>.json
 ```
@@ -343,8 +347,41 @@ real-corpus checks: CI never downloads the financial PDFs.
   retriever's results.
 - `python -m founderlens.retrieval.hybrid --query "..."` (V2 only; `--json`,
   `--smoke`).
-- **Not evaluated:** no hybrid retrieval quality has been measured. It must
-  be evaluated on the dev split before it could become the default.
+- Evaluated on the dev split in Commit 4.2 (below); not the default retriever.
+
+**Implemented (Commit 4.2), see [docs/retrieval_evaluation.md](docs/retrieval_evaluation.md#three-way-comparison-with-hybrid-rrf-commit-42):**
+- `python -m founderlens.evaluation.benchmark --include-hybrid` runs BM25,
+  dense and the real hybrid retriever on the same 24 dev questions.
+  - It is a separate experiment (`f6982b8eb438`) with separate reports.
+  - The two-method experiment `3fd7b205dc81` and its reports are unchanged.
+  - The run fails unless the hybrid's component rankings equal the
+    standalone ones and the BM25 and dense results reproduce the two-method
+    report: identities, chunk IDs, ranks, provenance and metrics exactly, raw
+    scores within an absolute 1e-6. On a fresh checkout, run the two-method
+    benchmark first; without its report the three-way run exits 1. Both
+    checks held in every run, with raw scores identical.
+- Development results (19 answerable questions, k = 5):
+
+  | | Recall@5 (hit) | Fact coverage@5 | Complete coverage@5 (n = 14) | MRR@10 |
+  |---|---|---|---|---|
+  | BM25 | 0.947 [0.842, 1.000] | 0.829 | 0.571 | 0.622 |
+  | Dense | 0.737 [0.526, 0.895] | 0.658 | 0.571 | 0.548 |
+  | Hybrid RRF | 0.947 [0.842, 1.000] | 0.829 | 0.643 | 0.679 |
+
+  - Hybrid and BM25 hit the same questions at k = 5. Their other differences
+    are small and their intervals include or touch zero, which does not make
+    them equivalent.
+  - Hybrid recovered BM25's four Recall@5 wins over dense (+0.211
+    [0.053, 0.421]; exact McNemar cross-check p = 0.125).
+  - Of hybrid's 8 missing facts at k = 5, 6 were in the BM25 + dense
+    candidate pool but cut off by fusion, and 2 were in neither list.
+  - One question (dev-015) lost evidence because a BM25-only rank-1 chunk was
+    fused below shared candidates.
+  - At k = 10 hybrid trailed BM25 on two questions.
+  - Warm hybrid queries took 17.9 / 23.2 ms (p50 / p95) against 1.4 / 2.1 ms
+    for BM25 on this machine.
+- **No default retrieval strategy is selected.** These are exploratory,
+  page-level, development-only numbers.
 
 **Not implemented:** generation,
 citations, abstention, answer-level evaluation and the judge, the Streamlit

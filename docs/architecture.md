@@ -3,8 +3,9 @@
 > **Status:** Stage 1 complete; Stage 2 (Commits 2.1–2.3) implemented;
 > Stage 3 Commits 3.1 (BM25 baseline), 3.2 (chunking V2 and the full-corpus
 > embedding pipeline), 3.3 (exact dense retrieval) and 3.4 (development-split
-> retrieval benchmark) implemented; Commit 4.1 (RRF hybrid retrieval)
-> implemented but not evaluated.
+> retrieval benchmark) implemented; Commit 4.1 (RRF hybrid retrieval) and
+> Commit 4.2 (three-way development benchmark) implemented; no default
+> retriever selected.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -631,9 +632,10 @@ rather than taken from the evaluation set.
 ### Hybrid retrieval: Reciprocal Rank Fusion (Commit 4.1)
 
 `founderlens.retrieval.hybrid` fuses the BM25 and dense rankings of the same
-V2 collection. **Its retrieval quality has not been measured.** It is not the
-default retriever, and it must be evaluated (dev split only) before it could
-become one.
+V2 collection. Its development-split retrieval quality was measured in
+Commit 4.2 against both baselines (see
+[retrieval_evaluation.md](retrieval_evaluation.md#three-way-comparison-with-hybrid-rrf-commit-42)).
+It is not the default retriever, and no default has been selected.
 
 **Why ranks, not scores.** BM25 scores are unbounded and depend on the corpus
 and the query length; cosine similarities lie in [-1, 1]. The two scales are
@@ -747,7 +749,10 @@ What the smoke run showed:
 - None of this measures retrieval quality.
 
 **Limitations.**
-- Quality is unmeasured, and the fusion settings are untuned initial values.
+- The fusion settings are untuned initial values. Quality was measured
+  only on 19 development questions (Commit 4.2).
+- Commit 4.2 observed the shared-candidate effect costing evidence on one
+  question (dev-015): a BM25-only rank-1 chunk fused to position 7.
 - Single-list candidates rank below all shared ones.
 - No company, period or page diversification.
 - Every query pays the dense cost: about 6–14 ms per warm query in this
@@ -821,9 +826,9 @@ pass.
 |------------------|----------------|------------|
 | `config` *(implemented)* | Project root and path resolution | stdlib |
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
-| `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
+| `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
-| `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid not yet evaluated) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
+| `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2; no default selected) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |

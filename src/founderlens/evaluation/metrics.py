@@ -8,7 +8,7 @@ order (rank 1 first), duplicates kept. See ``docs/retrieval_evaluation.md``.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -62,6 +62,42 @@ def recall_at_k(ranking: Sequence[PageId], gold: GoldEvidence, k: int) -> int:
 def covered_facts(ranking: Sequence[PageId], gold: GoldEvidence, k: int) -> tuple[str, ...]:
     found = pages_at_k(ranking, k)
     return tuple(fact_id for fact_id, pages in gold.facts if found & pages)
+
+
+def facts_covered_by_pages(pages: Collection[PageId], gold: GoldEvidence) -> tuple[str, ...]:
+    """Facts with an accepted page in an unordered page set (no rank, no cut-off)."""
+    found = frozenset(pages)
+    return tuple(fact_id for fact_id, accepted in gold.facts if found & accepted)
+
+
+RETAINED = "retained"
+CANDIDATE_RETRIEVAL_FAILURE = "candidate_retrieval_failure"
+FUSION_CUTOFF_FAILURE = "fusion_cutoff_failure"
+FACT_OUTCOMES = (RETAINED, CANDIDATE_RETRIEVAL_FAILURE, FUSION_CUTOFF_FAILURE)
+
+
+def classify_facts(
+    fused: Sequence[PageId], pool: Collection[PageId], gold: GoldEvidence, k: int
+) -> dict[str, str]:
+    """Per required fact, exactly one outcome at k for a fused ranking drawn from ``pool``.
+
+    ``retained``: an accepted page is in the fused top k. ``candidate_retrieval_failure``:
+    no accepted page anywhere in the candidate pool. ``fusion_cutoff_failure``: an
+    accepted page is in the pool but not in the fused top k. Alternative pages count.
+    """
+    top = pages_at_k(fused, k)
+    pool_pages = frozenset(pool)
+    if not top <= pool_pages:
+        raise ValueError("fused results contain pages outside the candidate pool")
+    outcomes = {}
+    for fact_id, accepted in gold.facts:
+        if top & accepted:
+            outcomes[fact_id] = RETAINED
+        elif pool_pages & accepted:
+            outcomes[fact_id] = FUSION_CUTOFF_FAILURE
+        else:
+            outcomes[fact_id] = CANDIDATE_RETRIEVAL_FAILURE
+    return outcomes
 
 
 def fact_coverage_at_k(ranking: Sequence[PageId], gold: GoldEvidence, k: int) -> float:

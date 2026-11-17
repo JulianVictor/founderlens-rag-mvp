@@ -6,8 +6,8 @@ only when its acceptance criteria are met and verified by the quality gates.
 | Stage | Title | Status |
 |------:|-------|--------|
 | 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
-| 2 | Document Ingestion Pipeline | In progress (Commits 2.1–2.2 implemented) |
-| 3 | Retrieval & Vector Search | Planned |
+| 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
+| 3 | Retrieval & Vector Search | In progress (Commits 3.1–3.4, 4.1–4.2 implemented; no default retriever selected) |
 | 4 | Grounded RAG Generation | Planned |
 | 5 | Cross-Document Reasoning & Guardrails | Planned |
 | 6 | RAG Evaluation & Benchmarking | Planned |
@@ -120,9 +120,22 @@ configuration on dev data only if any chunk exceeds the model limit (see
     V2, and a smoke report
     ([architecture.md](architecture.md#hybrid-retrieval-reciprocal-rank-fusion-commit-41)).
 
-  *(implemented; **not evaluated**: retrieval quality is unmeasured, and it
-  is not the default retriever. Evaluating it on the dev split is the next
-  step.)*
+  *(implemented; evaluated in Commit 4.2; not the default retriever)*
+- Comparative hybrid evaluation (Commit 4.2).
+  - BM25, dense and hybrid RRF with the same harness and settings.
+  - Diagnostics:
+    - verified component agreement;
+    - an exact baseline reproducibility check;
+    - paired comparisons for all three pairs;
+    - candidate-pool coverage;
+    - fact outcome classification;
+    - displaced exclusive evidence;
+    - company and period diversity;
+    - latency.
+  - Separate experiment ID and reports
+    ([retrieval_evaluation.md](retrieval_evaluation.md#three-way-comparison-with-hybrid-rrf-commit-42)).
+
+  *(implemented; development split only; no retrieval strategy selected)*
 
 **Acceptance criteria.** Index build is reproducible from processed chunks;
 retrieval metrics (see evaluation protocol) are reported for BM25 and dense
