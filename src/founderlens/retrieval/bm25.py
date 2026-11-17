@@ -179,6 +179,11 @@ class BM25Retriever:
         return len(self._chunks)
 
     @property
+    def indexed_chunks(self) -> tuple[ChunkRecord, ...]:
+        """The indexed chunk records, in collection order (read-only)."""
+        return self._chunks
+
+    @property
     def vocabulary_size(self) -> int:
         return len(self._postings)
 

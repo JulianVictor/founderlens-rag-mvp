@@ -6,7 +6,7 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 3 in progress (Commits 3.1–3.4).** Stages 1 and 2
+> **Current status: Commits 3.1–3.4 and 4.1.** Stages 1 and 2
 > are complete: the project foundation, a verified four-document corpus, a
 > human-reviewed frozen evaluation dataset, and page-aware extraction,
 > normalization and chunking. Implemented so far:
@@ -15,10 +15,12 @@ reproducible evaluation.
 >   all within the model's 256-token limit) fully embedded;
 > - exact dense (cosine) retrieval over V2;
 > - a deterministic **development-split** retrieval benchmark comparing the
->   two.
+>   two;
+> - reciprocal-rank-fusion hybrid retrieval over the same V2 collection
+>   (implemented, **not yet evaluated**).
 >
-> Retrieval quality is measured only on the 19 answerable development
-> questions; the held-out split has not been used. Generation, answer
+> Retrieval quality is measured only for BM25 and dense, on the 19
+> answerable development questions; the held-out split has not been used. Generation, answer
 > evaluation, the demo UI and deployment are **not implemented yet**. See
 > [Implementation status](#implementation-status).
 
@@ -120,6 +122,9 @@ python -m founderlens.retrieval.dense --query "How quickly is the AI chip maker'
 python -m founderlens.retrieval.dense --smoke   # dense and BM25 on V2 -> reports/
 # Development-split retrieval benchmark (BM25 and dense, both on V2)
 python -m founderlens.evaluation.benchmark      # reports/retrieval_benchmark.dev.{json,md}
+# Hybrid retrieval (RRF of BM25 and dense, both on V2; not yet evaluated)
+python -m founderlens.retrieval.hybrid --query "NVIDIA Blackwell"
+python -m founderlens.retrieval.hybrid --smoke  # reports/hybrid_smoke_report.<id>.json
 ```
 
 PyTorch is a pinned runtime dependency. On Windows and macOS the PyPI wheel
@@ -323,7 +328,25 @@ real-corpus checks: CI never downloads the financial PDFs.
     quality, and not held-out results.
 - Two full runs gave identical deterministic report content.
 
-**Not implemented:** hybrid retrieval, generation,
+**Implemented (Commit 4.1), see [docs/architecture.md](docs/architecture.md#hybrid-retrieval-reciprocal-rank-fusion-commit-41):**
+- Hybrid retrieval by Reciprocal Rank Fusion of BM25 and dense, both on the
+  same validated V2 collection: `rrf = Σ 1 / (60 + rank)`.
+  - Each retriever contributes its top 10 for the original query, with equal
+    weight; ties keep collection order; top-k is 1–10, default 5.
+  - BM25 and cosine scores are on incomparable scales, so only ranks are
+    fused. The raw scores are reported but never combined.
+- With these fixed settings, any chunk found by both retrievers outranks
+  every chunk found by only one. This can push down useful single-list
+  results, and RRF does not diversify across companies or periods.
+- Each result keeps the original chunk and its BM25 and dense ranks, scores
+  and contributions. Component failures are raised, never replaced by one
+  retriever's results.
+- `python -m founderlens.retrieval.hybrid --query "..."` (V2 only; `--json`,
+  `--smoke`).
+- **Not evaluated:** no hybrid retrieval quality has been measured. It must
+  be evaluated on the dev split before it could become the default.
+
+**Not implemented:** generation,
 citations, abstention, answer-level evaluation and the judge, the Streamlit
 demo, deployment. No held-out results exist.
 

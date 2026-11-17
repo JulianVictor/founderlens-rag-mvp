@@ -113,7 +113,16 @@ configuration on dev data only if any chunk exceeds the model limit (see
     ([retrieval_evaluation.md](retrieval_evaluation.md)).
 
   *(implemented; results on 19 answerable dev questions only)*
-- Optional hybrid fusion. *(planned)*
+- Hybrid fusion (Commit 4.1).
+  - Deterministic reciprocal rank fusion of BM25 and dense, both on V2:
+    constant 60, depth 10 each, equal weights, ties in collection order.
+  - Per-chunk component ranks, scores and contributions, a CLI defaulting to
+    V2, and a smoke report
+    ([architecture.md](architecture.md#hybrid-retrieval-reciprocal-rank-fusion-commit-41)).
+
+  *(implemented; **not evaluated**: retrieval quality is unmeasured, and it
+  is not the default retriever. Evaluating it on the dev split is the next
+  step.)*
 
 **Acceptance criteria.** Index build is reproducible from processed chunks;
 retrieval metrics (see evaluation protocol) are reported for BM25 and dense

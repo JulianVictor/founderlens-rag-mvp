@@ -3,7 +3,8 @@
 > **Status:** Stage 1 complete; Stage 2 (Commits 2.1–2.3) implemented;
 > Stage 3 Commits 3.1 (BM25 baseline), 3.2 (chunking V2 and the full-corpus
 > embedding pipeline), 3.3 (exact dense retrieval) and 3.4 (development-split
-> retrieval benchmark) implemented.
+> retrieval benchmark) implemented; Commit 4.1 (RRF hybrid retrieval)
+> implemented but not evaluated.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -13,7 +14,7 @@
 >   candidates, page-aware chunking);
 > - `founderlens.retrieval` (lexical tokenizer, in-memory BM25 baseline,
 >   shared result type, token-length audit, embedding artifact pipeline and
->   exact dense retrieval).
+>   exact dense retrieval, RRF hybrid retrieval).
 >
 > Everything else below is the **planned** design and may change as
 > evaluation results come in.
@@ -627,8 +628,126 @@ rather than taken from the evaluation set.
   bitwise determinism is not claimed.
 - No hybrid retrieval, reranking or filtering.
 
-- **Hybrid (optional).** Score or rank fusion, adopted only if evaluation
-  shows a measurable gain.
+### Hybrid retrieval: Reciprocal Rank Fusion (Commit 4.1)
+
+`founderlens.retrieval.hybrid` fuses the BM25 and dense rankings of the same
+V2 collection. **Its retrieval quality has not been measured.** It is not the
+default retriever, and it must be evaluated (dev split only) before it could
+become one.
+
+**Why ranks, not scores.** BM25 scores are unbounded and depend on the corpus
+and the query length; cosine similarities lie in [-1, 1]. The two scales are
+not comparable, and adding or normalizing them would need a calibration this
+project does not have. RRF uses only ranks.
+
+**Formula.** For each distinct chunk ID in the union of the two candidate
+lists:
+
+`rrf(c) = Σ_r 1 / (60 + rank_r(c))`
+
+- Ranks are one-based.
+- A retriever that did not return the chunk contributes 0.
+- Both retrievers have weight 1. Contributions are summed in a fixed order
+  (BM25, dense) with `math.fsum`.
+- Raw BM25 and cosine scores are kept for inspection but never enter the
+  formula.
+- RRF scores are rank-fusion scores, not relevance probabilities.
+
+**Fixed configuration (fusion algorithm version 1),** frozen before any smoke
+query:
+
+| Setting | Value |
+|---------|-------|
+| Constant | 60 |
+| Candidate depth | 10 from BM25 and 10 from dense, each requested once per query with the original text |
+| Contributions | equal |
+| Candidate identity | chunk ID (distinct chunks on one page stay distinct; no page deduplication) |
+| Ties | exact score ties keep collection order (manifest document, page, chunk index) |
+| Threshold | none |
+| Output top-k | 1–10, default 5, cut after fusion |
+
+- The configuration ID is `b13fa6b0f706`. It hashes the settings above plus
+  the component configuration IDs (BM25 `c21bdd0691f8`, dense
+  `088da6b50923`).
+- Collection, embedding and matrix identities are recorded separately, and
+  `top_k` is an execution parameter.
+- Candidate depth never changes with k, so top 5 is always the prefix of top
+  10.
+
+**The shared-candidate advantage.** With constant 60 and depth 10, a chunk in
+both lists scores at least 2/70 ≈ 0.0286. A chunk in only one list scores at
+most 1/61 ≈ 0.0164.
+- So every shared candidate outranks every single-list candidate, even
+  BM25's or dense's own first result.
+- This can push down a useful chunk that only one retriever found. It is the
+  reason a page found only by BM25 (or only by dense) can drop below rank 5.
+- RRF also does not diversify across companies or fiscal periods: if both
+  lists favour one company, the fused list does too.
+
+**Compatibility.** Before serving, the hybrid retriever requires:
+- the collection to be V2 (`0c2f87411627`);
+- BM25 to index exactly that collection's chunks in collection order;
+- the dense retriever's independently loaded collection to have the same
+  configuration ID, the same full SHA-256 and identical chunks.
+
+Every component result is then checked: original chunk record, ranks 1..n,
+no duplicates, finite scores, at most 10 results, correct method label. Any
+mismatch is an error. BM25 on V1 cannot be fused with dense V2.
+
+**Failures.**
+- A query with no letters or digits returns nothing, and no model is loaded.
+- A dense query over 256 tokens is rejected, never truncated.
+- An empty BM25 list (no lexical match) is legitimate, and the dense list is
+  fused alone. The component information shows the missing BM25 ranks.
+- Any component exception or invalid component ranking fails the query.
+  There is no silent fallback to one retriever.
+
+**Result contract.**
+- `search()` returns the shared `RetrievalResult` (method `hybrid_rrf`, fused
+  rank, raw RRF score, original chunk record), so the benchmark can consume
+  it later.
+- `search_detailed()` and `run()` also give each chunk's BM25 and dense rank,
+  raw score and contribution (or `null` when absent), plus the full component
+  lists and timings.
+
+**Command line.** Default V2; `--collection v1` fails with an explanation.
+
+```powershell
+python -m founderlens.retrieval.hybrid --query "NVIDIA Blackwell"
+python -m founderlens.retrieval.hybrid --query "Google Cloud" --top-k 10 --json
+python -m founderlens.retrieval.hybrid --smoke   # reports/hybrid_smoke_report.<id>.json
+```
+
+**Smoke run (V2, this machine, CPU; functional check only).** These are the
+established smoke queries, not evaluation questions, with top 10 fused.
+
+| Query | Candidate overlap | Union | Observation |
+|-------|------------------:|------:|-------------|
+| NVIDIA Blackwell | 5 | 15 | Fused top 5 are all shared candidates |
+| Google Cloud | 6 | 14 | Shared Alphabet page-7 and page-1 chunks first |
+| fourth quarter fiscal 2025 | 1 | 19 | One shared NVIDIA chunk first. Below it, single-list chunks alternate between BM25's NVIDIA and dense's Alphabet pages |
+| diluted earnings per share | 7 | 13 | An exact tie (1/61 + 1/62 both ways) is resolved by collection order |
+| How quickly is the AI chip maker's main business growing? | 3 | 17 | Three shared chunks lead. Dense's own top 2 (NVIDIA Q3 p1) fall to ranks 4–5 behind a shared Alphabet chunk |
+| What is a good recipe for banana bread? | 0 | 20 | No overlap; single-list ties are broken by collection order. Results are still returned |
+| empty, `$ % ( ) -` | – | – | No results; no model or retriever call |
+| `revenue` × 300 | – | – | Rejected: 302 tokens, never truncated |
+
+What the smoke run showed:
+- **Timing:** model load 7.4 s cold. For warm queries, BM25 took 0.2–0.8 ms,
+  dense 6.2–14.1 ms, fusion 0.15–0.19 ms, and the end-to-end median was
+  8.9 ms.
+- **Repeatability:** two independently initialized hybrid retrievers gave
+  identical component lists, raw component scores, fused order and RRF
+  scores (max abs difference 0.0), with the same configuration ID.
+- The paraphrase row shows the shared-candidate effect described above.
+- None of this measures retrieval quality.
+
+**Limitations.**
+- Quality is unmeasured, and the fusion settings are untuned initial values.
+- Single-list candidates rank below all shared ones.
+- No company, period or page diversification.
+- Every query pays the dense cost (model cold start, about 6–14 ms per warm
+  query).
 
 ## Generation and citation interfaces (planned, Stage 4)
 
@@ -690,7 +809,7 @@ pass.
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
 | `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
-| `retrieval` *(BM25, embeddings and dense search implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval (done); hybrid (optional, planned) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
+| `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid not yet evaluated) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |
@@ -707,7 +826,7 @@ Modules are created only in the stage that needs them.
 | `data/raw/` | Downloaded PDFs | No |
 | `data/processed/` | `pages.raw.jsonl` (raw page text), `pages.normalized.jsonl` (normalized text + table candidates), `chunks.jsonl` (retrieval chunks) | No |
 | `artifacts/` | `embeddings/<chunking config ID>/` (`embeddings.npy` + `manifest.json`); later indexes | No |
-| `reports/` | Extraction, normalization and chunking reports, BM25 and dense smoke reports, embedding token audit and build reports, evaluation outputs | No (summaries copied to docs when verified) |
+| `reports/` | Extraction, normalization and chunking reports, BM25, dense and hybrid smoke reports, embedding token audit and build reports, evaluation outputs | No (summaries copied to docs when verified) |
 
 ## Design decisions and trade-offs
 
