@@ -6,18 +6,21 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Stage 3 in progress (Commits 3.1–3.3).** Stages 1 and 2
+> **Current status: Stage 3 in progress (Commits 3.1–3.4).** Stages 1 and 2
 > are complete: the project foundation, a verified four-document corpus, a
 > human-reviewed frozen evaluation dataset, and page-aware extraction,
 > normalization and chunking. Implemented so far:
 > - a BM25 lexical retrieval baseline;
 > - a local embedding pipeline, with token-budgeted chunking V2 (164 chunks,
 >   all within the model's 256-token limit) fully embedded;
-> - exact dense (cosine) retrieval over V2.
+> - exact dense (cosine) retrieval over V2;
+> - a deterministic **development-split** retrieval benchmark comparing the
+>   two.
 >
-> **Retrieval quality has not been measured yet** (Commit 3.4). Generation,
-> evaluation runs, the demo UI and deployment are **not implemented yet**.
-> See [Implementation status](#implementation-status).
+> Retrieval quality is measured only on the 19 answerable development
+> questions; the held-out split has not been used. Generation, answer
+> evaluation, the demo UI and deployment are **not implemented yet**. See
+> [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
 application.
@@ -115,6 +118,8 @@ python -m founderlens.retrieval.bm25 --collection v2 --query "NVIDIA Blackwell"
 # Exact dense retrieval (defaults to V2; model loaded from the local cache)
 python -m founderlens.retrieval.dense --query "How quickly is the AI chip maker's main business growing?"
 python -m founderlens.retrieval.dense --smoke   # dense and BM25 on V2 -> reports/
+# Development-split retrieval benchmark (BM25 and dense, both on V2)
+python -m founderlens.evaluation.benchmark      # reports/retrieval_benchmark.dev.{json,md}
 ```
 
 PyTorch is a pinned runtime dependency. On Windows and macOS the PyPI wheel
@@ -290,9 +295,37 @@ real-corpus checks: CI never downloads the financial PDFs.
 - Functional smoke test only: retrieval quality has not been measured
   (Commit 3.4).
 
-**Not implemented:** hybrid retrieval, vector
-indexing, generation, citations, abstention, the evaluation harness and judge,
-the Streamlit demo, deployment. No evaluation results exist yet.
+**Implemented (Commit 3.4), see [docs/retrieval_evaluation.md](docs/retrieval_evaluation.md):**
+- `python -m founderlens.evaluation.benchmark` evaluates BM25 and dense, both
+  on V2.
+  - It runs on the development split only; the held-out file is never
+    opened, and `--split test` is refused.
+  - Same queries, k ∈ {1, 3, 5, 10} (primary k = 5, fixed before running),
+    page-level metrics from protocol v1.1 §3, and 95% bootstrap intervals.
+- Development results (19 answerable questions, k = 5):
+
+  | | Recall@5 (hit) | Fact coverage@5 | Complete coverage@5 (n = 14) | MRR@10 |
+  |---|---|---|---|---|
+  | BM25 | 0.947 [0.842, 1.000] | 0.829 | 0.571 | 0.622 |
+  | Dense | 0.737 [0.526, 0.895] | 0.658 | 0.571 | 0.548 |
+
+  - BM25 had higher observed Recall@5, by 21.1 percentage points. The paired
+    bootstrap interval prescribed by the protocol, [−0.421, −0.053], excluded
+    zero, but 19 questions limit how strong or general this finding is.
+    An exact McNemar cross-check on the 4-to-0 discordant pairs gives
+    p = 0.125.
+  - The other differences were inconclusive, which does not mean the systems
+    are equivalent.
+  - Both systems hit every question by k = 10.
+  - Recall@k here is the protocol's binary accepted-evidence hit, not
+    fractional IR recall.
+  - These are page-level retrieval numbers on a small set, not answer
+    quality, and not held-out results.
+- Two full runs gave identical deterministic report content.
+
+**Not implemented:** hybrid retrieval, generation,
+citations, abstention, answer-level evaluation and the judge, the Streamlit
+demo, deployment. No held-out results exist.
 
 ## Roadmap
 

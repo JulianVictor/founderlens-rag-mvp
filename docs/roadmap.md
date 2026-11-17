@@ -103,13 +103,23 @@ configuration on dev data only if any chunk exceeds the model limit (see
     ([architecture.md](architecture.md#exact-dense-retrieval-commit-33)).
 
   *(implemented; retrieval quality not yet measured)*
-- Commit 3.4: development-split retrieval evaluation of BM25 and dense, both
-  on V2. *(planned)*
+- Commit 3.4: deterministic development-split retrieval benchmark of BM25 and
+  dense, both on V2.
+  - Protocol v1.1 §3 metrics, k ∈ {1, 3, 5, 10} with primary k = 5, and 95%
+    bootstrap intervals.
+  - Per-question and per-category results, paired comparison, latency and
+    error analysis.
+  - The held-out split is never opened
+    ([retrieval_evaluation.md](retrieval_evaluation.md)).
+
+  *(implemented; results on 19 answerable dev questions only)*
 - Optional hybrid fusion. *(planned)*
 
 **Acceptance criteria.** Index build is reproducible from processed chunks;
 retrieval metrics (see evaluation protocol) are reported for BM25 and dense
-on the development split, from actual runs.
+on the development split, from actual runs. *(met locally: reproducible V2
+index and embeddings; development-split metrics from two identical benchmark
+runs, Commit 3.4. Remote CI not verified.)*
 
 ## Stage 4 — Grounded RAG Generation
 

@@ -2,12 +2,13 @@
 
 > **Status:** Stage 1 complete; Stage 2 (Commits 2.1–2.3) implemented;
 > Stage 3 Commits 3.1 (BM25 baseline), 3.2 (chunking V2 and the full-corpus
-> embedding pipeline) and 3.3 (exact dense retrieval) implemented; retrieval
-> quality not yet measured.
+> embedding pipeline), 3.3 (exact dense retrieval) and 3.4 (development-split
+> retrieval benchmark) implemented.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
-> - `founderlens.evaluation` (dataset schema and validation);
+> - `founderlens.evaluation` (dataset schema and validation, page-level
+>   retrieval metrics, the development-split retrieval benchmark);
 > - `founderlens.ingestion` (raw page-level extraction, normalization, table
 >   candidates, page-aware chunking);
 > - `founderlens.retrieval` (lexical tokenizer, in-memory BM25 baseline,
@@ -500,9 +501,9 @@ V1 chunks. `build --collection v1` refuses without encoding anything.
 ### Exact dense retrieval (Commit 3.3)
 
 `founderlens.retrieval.dense` performs exact cosine search over a validated
-(collection, embedding artifact) pair. **Retrieval quality has not been
-measured yet**; Commit 3.4 evaluates BM25 and dense retrieval on the dev
-split.
+(collection, embedding artifact) pair. Commit 3.4 measures BM25 and dense
+retrieval on the development split; see
+[retrieval_evaluation.md](retrieval_evaluation.md).
 
 **Lifecycle.**
 1. `load_dense_retriever(settings, "v2")` loads the named collection and its
@@ -617,7 +618,8 @@ rather than taken from the evaluation set.
     still answered by BM25, which has no token limit.
 
 **Limitations.**
-- Retrieval quality has not been measured.
+- Retrieval quality is measured only on the development split (Commit 3.4);
+  no held-out results exist.
 - MiniLM is a small general-purpose English model: exact figures and fiscal
   labels are weak signals, and company names can be confused.
 - A 256-token query limit.
@@ -686,7 +688,7 @@ pass.
 |------------------|----------------|------------|
 | `config` *(implemented)* | Project root and path resolution | stdlib |
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
-| `evaluation` *(schema and validation implemented)* | Dataset schema and validation; metrics, runner and judge planned | config, corpus manifest |
+| `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` *(BM25, embeddings and dense search implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval (done); hybrid (optional, planned) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
