@@ -706,9 +706,13 @@ mismatch is an error. BM25 on V1 cannot be fused with dense V2.
 - `search()` returns the shared `RetrievalResult` (method `hybrid_rrf`, fused
   rank, raw RRF score, original chunk record), so the benchmark can consume
   it later.
-- `search_detailed()` and `run()` also give each chunk's BM25 and dense rank,
-  raw score and contribution (or `null` when absent), plus the full component
-  lists and timings.
+- `search_detailed()` and `run()` also give, for each chunk, the BM25 and
+  dense rank, raw score and RRF contribution, plus the full component lists
+  and timings.
+- When a retriever did not return the chunk, its rank and raw score are
+  `null` (diagnostic only), and its contribution is `0.0`, which is exactly
+  the value used in the sum. The two contributions always add up to the
+  reported RRF score.
 
 **Command line.** Default V2; `--collection v1` fails with an explanation.
 
@@ -727,7 +731,7 @@ established smoke queries, not evaluation questions, with top 10 fused.
 | Google Cloud | 6 | 14 | Shared Alphabet page-7 and page-1 chunks first |
 | fourth quarter fiscal 2025 | 1 | 19 | One shared NVIDIA chunk first. Below it, single-list chunks alternate between BM25's NVIDIA and dense's Alphabet pages |
 | diluted earnings per share | 7 | 13 | An exact tie (1/61 + 1/62 both ways) is resolved by collection order |
-| How quickly is the AI chip maker's main business growing? | 3 | 17 | Three shared chunks lead. Dense's own top 2 (NVIDIA Q3 p1) fall to ranks 4–5 behind a shared Alphabet chunk |
+| How quickly is the AI chip maker's main business growing? | 3 | 17 | Three shared chunks lead, the first an Alphabet chunk. Dense's own top 2 (NVIDIA Q3 p1) fall to ranks 4–5 behind them |
 | What is a good recipe for banana bread? | 0 | 20 | No overlap; single-list ties are broken by collection order. Results are still returned |
 | empty, `$ % ( ) -` | – | – | No results; no model or retriever call |
 | `revenue` × 300 | – | – | Rejected: 302 tokens, never truncated |
@@ -746,8 +750,18 @@ What the smoke run showed:
 - Quality is unmeasured, and the fusion settings are untuned initial values.
 - Single-list candidates rank below all shared ones.
 - No company, period or page diversification.
-- Every query pays the dense cost (model cold start, about 6–14 ms per warm
-  query).
+- Every query pays the dense cost: about 6–14 ms per warm query in this
+  smoke run, plus the one-time model load.
+- **Cold start is an unresolved deployment issue.** First-query model loads
+  on this machine were:
+  - 7.7 s (Commit 3.3 smoke run);
+  - 49.4 s and 39.4 s (Commit 3.4 benchmark runs);
+  - 7.4 s (this smoke run).
+
+  These were separate runs under different conditions, so they are not a
+  controlled comparison, and the cause of the variation was not
+  investigated. A deployment should load the model once at startup and
+  measure its own cold start.
 
 ## Generation and citation interfaces (planned, Stage 4)
 
