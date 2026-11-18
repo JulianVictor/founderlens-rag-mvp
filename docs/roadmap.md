@@ -8,7 +8,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
 | 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
-| 4 | Grounded RAG Generation | Next milestone (planned) |
+| 4 | Grounded RAG Generation | In progress (Commit 5.1 provider layer implemented; grounding, citations and abstention not implemented) |
 | 5 | Cross-Document Reasoning & Guardrails | Planned |
 | 6 | RAG Evaluation & Benchmarking | Planned |
 | 7 | Streamlit Interactive Demo | Planned |
@@ -166,7 +166,18 @@ prompt that constrains answers to provided context; structured output with
 document/page citations; citation validation against retrieved chunks.
 Retrieval comes from `load_policy_retriever` (BM25 V2, up to ten
 candidates); context selection and token budgeting from those candidates are
-part of this stage.
+part of this stage. Commits:
+- Commit 5.1: typed OpenAI provider (Responses API, SDK `openai==3.55.0`,
+  model `gpt-5.4-mini-2026-03-17`, reasoning effort none, 1,024 output
+  tokens, `store=False`). Native Structured Outputs, normalized results and
+  token usage, sanitized error categories, SDK-only retries (30 s per
+  attempt, one retry), metadata-only logging, offline tests and an opt-in
+  live smoke test ([architecture.md](architecture.md#llm-provider-commit-51)).
+  *(implemented; offline-tested only; live test not run; no retrieval
+  integration)*
+- Commit 5.2: evidence context and grounded prompts. *(planned)*
+- Commit 5.3: structured grounded generation. *(planned)*
+- Commit 5.4: citation and response validation. *(planned)*
 
 **Acceptance criteria.** Every citation refers to a retrieved chunk; tests mock
 the API client; no key needed for the test suite.

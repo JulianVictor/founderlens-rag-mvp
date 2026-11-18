@@ -37,6 +37,15 @@ dependencies = [
     # torch==2.15.0 from https://download.pytorch.org/whl/cpu first (as CI does),
     # otherwise pip pulls the CUDA build and several GB of NVIDIA libraries.
     "torch==2.15.0",
+    # LLM provider (Commit 5.1): official OpenAI Python SDK, Responses API.
+    # 3.55.0 is the latest stable release (verified with pip check on CPython
+    # 3.12); it adds only jiter and sniffio and uses the already-installed
+    # httpx2, anyio and pydantic. License: Apache-2.0.
+    "openai==3.55.0",
+    # Typed structured-output schemas (Commit 5.1). Already installed
+    # transitively; declared because generation imports it directly.
+    # License: MIT.
+    "pydantic==2.14.3",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

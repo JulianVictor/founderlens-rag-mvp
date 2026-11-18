@@ -46,7 +46,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{label:<16}{path} ({status})")
     print(
         "Status: OK (page extraction, normalization, chunking, BM25, dense and hybrid "
-        "retrieval implemented; no generation implemented)"
+        "retrieval and the OpenAI provider implemented; grounded generation not implemented)"
     )
     return 0
 

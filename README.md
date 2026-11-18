@@ -6,7 +6,7 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Commits 3.1–3.4 and 4.1–4.3.** Stages 1–3
+> **Current status: Commits 3.1–3.4, 4.1–4.3 and 5.1.** Stages 1–3
 > are complete: the project foundation, a verified four-document corpus, a
 > human-reviewed frozen evaluation dataset, page-aware extraction,
 > normalization and chunking, and retrieval. Implemented so far:
@@ -19,12 +19,14 @@ reproducible evaluation.
 > - reciprocal-rank-fusion hybrid retrieval over the same V2 collection,
 >   compared with both baselines on the development split;
 > - a frozen retrieval policy for generation: **BM25 on V2, ten candidates**
->   ([decision record](docs/retrieval_strategy.md)).
+>   ([decision record](docs/retrieval_strategy.md));
+> - Stage 4 has started: a typed OpenAI LLM provider layer (Commit 5.1),
+>   offline-tested only and not yet connected to retrieval.
 >
 > Retrieval quality is measured for BM25, dense and hybrid on the 19
 > answerable development questions only; the held-out split has not been
-> used. Generation (Stage 4, next), answer evaluation, the demo UI and
-> deployment are **not implemented yet**. See
+> used. Grounded generation, citations, abstention, answer evaluation, the
+> demo UI and deployment are **not implemented yet**. See
 > [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
@@ -79,7 +81,7 @@ Details and a Mermaid diagram: [docs/architecture.md](docs/architecture.md).
 | Keyword retrieval | rank-bm25 0.2.2 (BM25Okapi) + NumPy 2.5.4 | In use (in-memory baseline, Commit 3.1) |
 | Embeddings | sentence-transformers 6.2.0, `all-MiniLM-L6-v2` (pinned revision), PyTorch 2.15.0 CPU | In use (Commit 3.2): chunking V2 fully embedded; no dense search yet |
 | Vector search | Exact NumPy dot product (164 × 384); FAISS not needed at this size | In use (Commit 3.3) |
-| Generation | OpenAI API | Planned (Stage 4) |
+| LLM provider | OpenAI Python SDK 3.55.0 (Responses API), `gpt-5.4-mini-2026-03-17`, Pydantic 2.14.3 | Provider layer implemented (Commit 5.1); grounded generation planned |
 | Demo | Streamlit | Planned (Stage 7) |
 
 ## Local setup (Windows PowerShell)
@@ -164,11 +166,16 @@ python -m founderlens.evaluation.validate
 python -m founderlens.corpus.validate        # needs the PDFs locally
 python -m founderlens.ingestion.extract     # needs the PDFs locally
 $env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_corpus_real.py tests/test_ingestion_real.py -q
+python -m pytest tests/test_generation_openai.py -q   # offline provider tests, no key
+# Opt-in PAID live smoke test (two tiny calls, synthetic text); never run by CI
+$env:FOUNDERLENS_RUN_LIVE_LLM_TESTS = "1"; python -m pytest tests/test_generation_openai_live.py -q
 ```
 
 CI runs the same gates on pushes and pull requests to `main`
 ([.github/workflows/ci.yml](.github/workflows/ci.yml)), except the two
-real-corpus checks: CI never downloads the financial PDFs.
+real-corpus checks: CI never downloads the financial PDFs. CI has no API key
+and makes no paid calls; the live LLM test is skipped unless
+`FOUNDERLENS_RUN_LIVE_LLM_TESTS=1` is set, and a key alone never enables it.
 
 ## Implementation status
 
@@ -413,8 +420,45 @@ real-corpus checks: CI never downloads the financial PDFs.
   not the final LLM context. Existing CLIs are unchanged (BM25 still
   defaults to V1 and top 5).
 
-**Not implemented:** generation,
-citations, abstention, answer-level evaluation and the judge, the Streamlit
+**Implemented (Commit 5.1), see [docs/architecture.md](docs/architecture.md#llm-provider-commit-51):**
+- `founderlens.generation`: a typed LLM provider layer, not yet connected to
+  retrieval.
+  - `GenerationConfig` `cbc4e415c848`: `gpt-5.4-mini-2026-03-17`, reasoning
+    effort `none`, 1,024 output tokens, `store=False`, non-streaming, no
+    tools, no background mode, no conversation state, no sampling parameters,
+    no model fallback. Operational settings: 30 s per attempt, one SDK retry.
+  - `OpenAIProvider.generate_text` and `generate_structured` (native strict
+    Structured Outputs from a Pydantic model, validated only after the
+    status and refusal checks). Schemas must be strict-mode compatible:
+    `extra="forbid"`, every field required, no defaults, nested models
+    allowed.
+  - For the pinned snapshot, a response reporting any other model is
+    rejected; no other model is ever requested.
+  - Typed results with requested and returned model, response and request
+    IDs, latency and provider-reported token usage (unknown fields stay
+    empty).
+  - One error class per category (authentication, permission, invalid
+    request, model unavailable, rate limit, quota, timeout, connection,
+    server, refusal, incomplete, invalid structured output, unexpected
+    response), with sanitized messages.
+- Credentials: `OPENAI_API_KEY` (see `.env.example`) is needed only to
+  construct the live provider. Imports, retrieval and the default tests need
+  no key.
+- Logs hold metadata only, never prompts, outputs or keys. Provider-supplied
+  identifiers are sanitized against log injection.
+- The SDK client still holds the key in memory. Its debug logging and
+  error trackers that capture locals need separate production safeguards.
+- Retries come only from the SDK (connection errors, timeouts, 408, 409, 429
+  and 5xx). The 30 s timeout applies per attempt, not in total, and retried
+  or timed-out calls may still be billed.
+- Verified offline only, with the real SDK over a mocked HTTP transport.
+  The live smoke test (exactly two tiny calls) exists but has not been run,
+  so account-level model availability and live structured-output behaviour
+  are unverified, and no API credits have been used. Hosted outputs are not
+  bitwise reproducible.
+
+**Not implemented:** retrieval-to-LLM integration, evidence context and
+grounded prompts, grounded answers, citations, abstention, answer-level evaluation and the judge, the Streamlit
 demo, deployment. No held-out results exist.
 
 ## Roadmap
@@ -422,7 +466,7 @@ demo, deployment. No held-out results exist.
 1. Project Foundation & Dataset — *complete; benchmark frozen*
 2. Document Ingestion Pipeline
 3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
-4. Grounded RAG Generation — *next*
+4. Grounded RAG Generation — *in progress (5.1 provider layer)*
 5. Cross-Document Reasoning & Guardrails
 6. RAG Evaluation & Benchmarking
 7. Streamlit Interactive Demo
@@ -454,7 +498,9 @@ replace PyMuPDF. This note is not legal advice.
   reviewer, the project owner. They have not been independently verified. The held-out split is a procedural holdout with public labels.
 - Single-user demo; no authentication, accounts, billing or multi-tenancy.
 - No database; local files and a FAISS index are the only storage.
-- Generation will depend on a third-party API (OpenAI) and its cost/latency.
+- Generation depends on a third-party API (OpenAI): its cost, latency,
+  availability and data-retention policy (`store=False` does not by itself
+  remove abuse-monitoring retention).
 - Answers are research aids, not financial advice.
 - Evaluation will use a small hand-built question set; results will not
   generalize beyond this corpus.

@@ -7,7 +7,8 @@
 > Commit 4.2 (three-way development benchmark) implemented; Commit 4.3
 > selects BM25 on V2 (top 10) as the retrieval path for generation
 > ([retrieval_strategy.md](retrieval_strategy.md)), completing Stage 3.
-> Generation (Stage 4) is not implemented.
+> Stage 4: Commit 5.1 (typed OpenAI provider layer) implemented; grounded
+> generation, citations and abstention are not implemented.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -17,7 +18,9 @@
 >   candidates, page-aware chunking);
 > - `founderlens.retrieval` (lexical tokenizer, in-memory BM25 baseline,
 >   shared result type, token-length audit, embedding artifact pipeline and
->   exact dense retrieval, RRF hybrid retrieval).
+>   exact dense retrieval, RRF hybrid retrieval, the frozen retrieval
+>   policy);
+> - `founderlens.generation` (OpenAI provider layer only).
 >
 > Everything else below is the **planned** design and may change as
 > evaluation results come in.
@@ -804,19 +807,182 @@ The decision, its evidence and the alternatives are in
 - The standalone `founderlens.retrieval.bm25` CLI keeps its V1 and top-5
   defaults.
 
-## Generation and citation interfaces (planned, Stage 4)
+## LLM provider (Commit 5.1)
 
-Indicative contracts, not yet implemented apart from retrieval:
+`founderlens.generation` holds the provider layer only. It does not import
+retrieval, and retrieval does not import it.
+
+| Module | Contents |
+|---|---|
+| `config` | `GenerationConfig` (frozen): model, reasoning effort, output-token budget (semantic, hashed into `config_id`), and per-attempt timeout and SDK retries (operational, reported separately) |
+| `schema` | `GenerationRequest` (instructions, input text), `GenerationResult[T]`, `TokenUsage`, `ProviderIdentity`, and the `LLMProvider` Protocol (`generate_text`, `generate_structured`, `close`) |
+| `errors` | `GenerationError` and one subclass per category, with sanitized messages |
+| `openai_provider` | `OpenAIProvider`: the OpenAI Responses API adapter, using SDK `openai==3.55.0` |
+
+**Default configuration** `cbc4e415c848`:
+- Model `gpt-5.4-mini-2026-03-17`, `reasoning.effort` `none`, 1,024 maximum
+  output tokens.
+- `store=False`, `stream=False`; no background mode, tools,
+  `previous_response_id`, conversation, temperature, top-p, seed or model
+  fallback.
+- Operational settings: 30 s per attempt, one SDK retry.
+- Another model can be configured deliberately. Whether it accepts the chosen
+  effort is enforced by the API: a rejection raises `InvalidRequestError`,
+  and no other model is tried.
+
+**Request.**
+- `responses.with_raw_response.create(model, instructions, input,
+  max_output_tokens, reasoning, store=False, stream=False[, text])`.
+- One synchronous client per provider, created in the constructor (never on
+  import) and reused. `close()` or a `with` block releases it.
+- The request ID is read from the `x-request-id` response header.
+
+**Structured Outputs.**
+- `generate_structured(request, Schema)` sends the native strict
+  `json_schema` text format (`text.format`, `strict: true`), built from
+  `Schema.model_json_schema()` without transforming it.
+- **Supported schema contract.** The schema must be a Pydantic model whose
+  root is an object. Every object in it, including nested models under
+  `$defs` reached through `$ref`, must use `extra="forbid"`, list every
+  property as required and have no defaults; optional values are written
+  `X | None`. Open-ended mappings (`dict[str, X]`) and the keywords
+  `allOf`, `not`, `if`/`then`/`else`, `dependentRequired`,
+  `dependentSchemas` and `default` are rejected before any request. This is
+  a focused check for strict mode, not a general JSON Schema compatibility
+  engine; anything else the API rejects raises `InvalidRequestError`.
+- The SDK's `responses.parse` helper is not used. It validates output text
+  before the status can be checked, so a truncated response would look like
+  a schema error. Here the status, refusals and output items are checked
+  first, and only then is the text validated with `Schema.model_validate_json`.
+- There is no fallback to free-form JSON and no repair.
+- Schema-valid output is not evidence of factual correctness.
+
+**Response handling.** A result is returned only for `status == "completed"`
+with non-empty final output text. Everything else raises:
+
+| Outcome | Error |
+|---|---|
+| Incomplete (`incomplete_details.reason`, e.g. `max_output_tokens`) | `IncompleteGenerationError` (`output_tokens_exhausted`) |
+| Refusal content | `ModelRefusalError` (`refusal` holds the text; never logged) |
+| Output not matching the schema | `StructuredOutputError` |
+| `failed` status | `ProviderServerError` |
+| Empty output, unknown output or content types, a message not `completed`, other statuses | `UnexpectedResponseError` |
+| Returned model differs from the pinned snapshot | `UnexpectedResponseError` |
+
+Reasoning items are skipped, and the text of `commentary` messages is not
+the answer. Every message, commentary included, is still checked for
+refusals and unknown content types, so a skipped item cannot hide a refusal
+or a failure. Item and content types are checked by their `type` field as
+well as their SDK class, because the SDK builds unknown types as a known class.
+
+**Model identity.**
+- The configured model is always the requested model, and no other model is
+  ever tried.
+- For a dated snapshot (`...-YYYY-MM-DD`, such as the default) the response
+  must report exactly that snapshot. Anything else raises
+  `UnexpectedResponseError` and the output is discarded, because the result
+  would not belong to the pinned configuration.
+- For an alias (for example `gpt-5.4-mini`) the resolved model is recorded
+  as reported.
+- Both names are kept on every result (`requested_model`, `response_model`).
+
+**Provider errors** (SDK exception → category; the raw exception is not
+chained):
+
+| SDK error | Category |
+|---|---|
+| 401 | `authentication` |
+| 403 | `permission_denied` |
+| 404 or `model_not_found` | `model_unavailable` |
+| 400, 422 | `invalid_request` (with the parameter name) |
+| 429 | `rate_limited`, or `quota_exceeded` for `insufficient_quota` |
+| 5xx | `provider_server_error` |
+| Timeout | `timeout` |
+| Connection failure | `connection` |
+| SDK response validation | `unexpected_response` |
+
+Messages contain only the category, HTTP status, provider code or type,
+parameter name and request ID. Provider messages, headers, prompts and keys
+are never included. Provider-controlled identifiers (request and response
+IDs, codes, types, parameter names, model names) pass through
+`errors.safe_token`. It replaces every character outside
+`[A-Za-z0-9._:/-]` with `?`, redacts key-shaped `sk-...` tokens and caps the
+length at 128, so these values cannot add log lines or echo a key. Refusal, incomplete and schema errors are model outcomes,
+not transport failures, and none of them means "insufficient evidence";
+abstention is decided later in Stage 4.
+
+**Timeouts and retries.**
+- Only the SDK retries: up to `max_retries` (default 1) on connection
+  errors, timeouts and HTTP 408, 409, 429 and 5xx, with exponential backoff.
+- It never retries 400, 401, 403, 404 or 422. A 429 for exhausted quota is
+  also retried once unless the server says otherwise.
+- The 30 s timeout applies per attempt, not to the whole call: two attempts
+  plus backoff can take longer.
+- A timed-out or retried request may still have been processed and billed.
+- End-to-end deadlines and public rate limits belong to the serving layer.
+
+**Token usage.**
+- `TokenUsage` keeps the provider's fields: `input_tokens`,
+  `cached_input_tokens` (a subset of input), `output_tokens`,
+  `reasoning_tokens` (a subset of output) and `total_tokens` (the provider's
+  total).
+- Subsets are never added again. Missing fields stay `None`; nothing is
+  estimated. No pricing is computed.
+
+**Credentials and logging.**
+- `OPENAI_API_KEY` is read from the environment (or passed explicitly) only
+  when `OpenAIProvider` is constructed. Imports, configuration, retrieval
+  commands and the default tests need no key.
+- Application-level protection: the provider object does not keep the key,
+  and it never appears in `repr`, identities, results, errors or this
+  package's logs.
+- The SDK client necessarily holds the key in memory and sends it in the
+  `Authorization` header. The key therefore exists in process memory; this
+  design does not claim otherwise.
+- Logs (`founderlens.generation.openai_provider`) contain metadata only:
+  provider, model, `config_id`, status, latency, usage, response and request
+  IDs, and error category. No prompts, inputs, generated or invalid output,
+  or refusal text.
+- Full response objects are not persisted.
+- Production logging needs separate safeguards. The SDK's own debug logging
+  (`OPENAI_LOG=debug`) and HTTP-library debug logs can record request
+  details. Error trackers that capture traceback locals can see request
+  objects and the constructor's `api_key` argument.
+- `store=False` stops OpenAI keeping the response as application state. It
+  does not remove abuse-monitoring retention (up to 30 days) unless the
+  account has approved zero data retention.
+
+**Tests.**
+- `tests/test_generation_openai.py` (79 cases) runs the real SDK against
+  `httpx2.MockTransport`. It covers serialization, retries, error mapping,
+  parsing, nested schemas, model identity, log and message sanitization
+  with sentinel secrets, lifecycle and imports, with no network and no key.
+- `tests/test_generation_openai_live.py` makes exactly two tiny paid calls
+  with synthetic text and `max_retries=0`. It runs only with
+  `FOUNDERLENS_RUN_LIVE_LLM_TESTS=1`; a key alone never enables it. It has
+  not been run, so account-level model availability and live
+  structured-output behaviour are unverified.
+- Hosted outputs are not bitwise reproducible.
+
+## Generation and citation interfaces (planned, Commits 5.2–5.4)
+
+Indicative contracts, not yet implemented apart from retrieval and the
+provider:
 
 - Retrieval: `load_policy_retriever(settings).search(question)` returns up to
   ten `RetrievalResult`s (rank, raw BM25 score, original `ChunkRecord` with
   text, document, page, offsets, company and fiscal period). Implemented in
   Commit 4.3.
-- `answer(question, evidence) -> GroundedAnswer` — answer text, list of
+- Provider: `OpenAIProvider(config).generate_structured(request, Schema)`.
+  Implemented in Commit 5.1.
+- `answer(question, evidence) -> GroundedAnswer`: answer text, list of
   citations `(document_id, page)`, `abstained: bool`, token usage, latency.
+  Planned for Commits 5.2 (evidence context and grounded prompts), 5.3
+  (structured grounded generation) and 5.4 (citation and response
+  validation).
 
-The OpenAI client is the only external service and is injected so tests can
-substitute a fake.
+The provider is passed in, so tests substitute a mocked transport or a
+fake `LLMProvider`.
 
 ## Evaluation workflow
 
@@ -867,7 +1033,7 @@ pass.
 | `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2), frozen retrieval policy and generation-facing BM25 V2 entry point (Commit 4.3; no model needed) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch (dense and embeddings only) |
-| `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
+| `generation` *(provider layer implemented, Commit 5.1)* | OpenAI Responses provider, configuration, typed results and errors (done); evidence context, grounded prompts, citations and abstention planned (5.2–5.4) | openai, pydantic (provider); retrieval types (planned, 5.2) |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |
 
