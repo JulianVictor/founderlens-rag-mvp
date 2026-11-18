@@ -639,6 +639,13 @@ Execution order:
 - The held-out split stays closed until one frozen configuration is chosen
   (protocol §10).
 
+**Later decision (Commit 4.3).** Using these results plus operational cost,
+BM25 on V2 with ten candidates was selected as the retrieval path for
+generation. That is an architecture choice for the first serving path, not a
+finding that BM25 outperforms hybrid; see
+[retrieval_strategy.md](retrieval_strategy.md). No retriever, metric or
+figure above was changed.
+
 ### Limitations (Commit 4.2)
 
 - The same limitations as Commit 3.4 apply: 19 answerable questions;

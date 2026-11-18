@@ -4,8 +4,10 @@
 > Stage 3 Commits 3.1 (BM25 baseline), 3.2 (chunking V2 and the full-corpus
 > embedding pipeline), 3.3 (exact dense retrieval) and 3.4 (development-split
 > retrieval benchmark) implemented; Commit 4.1 (RRF hybrid retrieval) and
-> Commit 4.2 (three-way development benchmark) implemented; no default
-> retriever selected.
+> Commit 4.2 (three-way development benchmark) implemented; Commit 4.3
+> selects BM25 on V2 (top 10) as the retrieval path for generation
+> ([retrieval_strategy.md](retrieval_strategy.md)), completing Stage 3.
+> Generation (Stage 4) is not implemented.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -109,7 +111,10 @@ flowchart LR
 
 ## Online question-answering pipeline (Stages 3–5)
 
-1. **Retrieve** top-k chunks with BM25, dense search, or a hybrid.
+1. **Retrieve** up to ten ranked candidate chunks with the frozen policy
+   (BM25 on V2, `founderlens.retrieval.policy`; see
+   [Selected retrieval policy](#selected-retrieval-policy-commit-43)). Dense
+   and hybrid retrieval remain evaluated alternatives, not used here.
 2. **Assemble evidence** with document and page metadata.
 3. **Generate** an answer constrained to the evidence.
 4. **Validate citations**: each cited `(document, page)` must exist in the
@@ -635,7 +640,9 @@ rather than taken from the evaluation set.
 V2 collection. Its development-split retrieval quality was measured in
 Commit 4.2 against both baselines (see
 [retrieval_evaluation.md](retrieval_evaluation.md#three-way-comparison-with-hybrid-rrf-commit-42)).
-It is not the default retriever, and no default has been selected.
+It was not selected for generation (Commit 4.3 selects BM25; see
+[retrieval_strategy.md](retrieval_strategy.md)) and remains an evaluated
+alternative.
 
 **Why ranks, not scores.** BM25 scores are unbounded and depend on the corpus
 and the query length; cosine similarities lie in [-1, 1]. The two scales are
@@ -768,12 +775,43 @@ What the smoke run showed:
   investigated. A deployment should load the model once at startup and
   measure its own cold start.
 
+### Selected retrieval policy (Commit 4.3)
+
+`founderlens.retrieval.policy` freezes the retrieval path for generation.
+The decision, its evidence and the alternatives are in
+[retrieval_strategy.md](retrieval_strategy.md).
+
+- `RetrievalPolicy` (frozen dataclass, schema version 1): method `bm25`,
+  collection `v2` (`0c2f87411627`), BM25 config `c21bdd0691f8`, candidate
+  top-k 10, no score threshold, no fallback, no page deduplication, plus the
+  existing matching and tie-breaking rules. Its canonical JSON hashes to
+  policy ID `f20913f1c1ec`. The policy ID is separate from the BM25,
+  collection and evaluation IDs.
+- `load_policy_retriever(settings)` loads V2 with `load_named_collection`,
+  checks the chunking configuration ID, the pinned artifact SHA-256
+  (`f9a8f12a…`, full value in the module) and the BM25 scoring ID, then builds
+  one `BM25Retriever`. `PolicyRetriever.search(query)` calls the existing
+  `BM25Retriever.search` with `top_k=10`; `identities()` returns the policy and
+  the actual artifact and scoring identities.
+- Any mismatch, or a missing V2, raises `RetrievalError` with the reason.
+  Nothing falls back to V1, dense or hybrid, and nothing is rebuilt.
+- The path imports no PyTorch, Sentence Transformers or embedding model code
+  and reads no embedding matrix or benchmark report.
+- `python -m founderlens.retrieval.policy [--json]` verifies the policy
+  against the local artifacts.
+- Candidate top-k (10) is not the benchmark's primary k (5) and not the final
+  LLM context; selection and token budgeting belong to Stage 4.
+- The standalone `founderlens.retrieval.bm25` CLI keeps its V1 and top-5
+  defaults.
+
 ## Generation and citation interfaces (planned, Stage 4)
 
-Indicative contracts, not yet implemented:
+Indicative contracts, not yet implemented apart from retrieval:
 
-- `retrieve(question, k) -> list[RetrievedChunk]` — chunk text, score,
-  `document_id`, `page_start`, `page_end`.
+- Retrieval: `load_policy_retriever(settings).search(question)` returns up to
+  ten `RetrievalResult`s (rank, raw BM25 score, original `ChunkRecord` with
+  text, document, page, offsets, company and fiscal period). Implemented in
+  Commit 4.3.
 - `answer(question, evidence) -> GroundedAnswer` — answer text, list of
   citations `(document_id, page)`, `abstained: bool`, token usage, latency.
 
@@ -828,7 +866,7 @@ pass.
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
 | `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
-| `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2; no default selected) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch |
+| `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2), frozen retrieval policy and generation-facing BM25 V2 entry point (Commit 4.3; no model needed) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch (dense and embeddings only) |
 | `generation` | Prompting, OpenAI calls, citations, abstention | retrieval types |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |

@@ -7,8 +7,8 @@ only when its acceptance criteria are met and verified by the quality gates.
 |------:|-------|--------|
 | 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
 | 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
-| 3 | Retrieval & Vector Search | In progress (Commits 3.1–3.4, 4.1–4.2 implemented; no default retriever selected) |
-| 4 | Grounded RAG Generation | Planned |
+| 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
+| 4 | Grounded RAG Generation | Next milestone (planned) |
 | 5 | Cross-Document Reasoning & Guardrails | Planned |
 | 6 | RAG Evaluation & Benchmarking | Planned |
 | 7 | Streamlit Interactive Demo | Planned |
@@ -135,13 +135,27 @@ configuration on dev data only if any chunk exceeds the model limit (see
   - Separate experiment ID and reports
     ([retrieval_evaluation.md](retrieval_evaluation.md#three-way-comparison-with-hybrid-rrf-commit-42)).
 
-  *(implemented; development split only; no retrieval strategy selected)*
+  *(implemented; development split only)*
+- Retrieval strategy decision (Commit 4.3).
+  - BM25 on collection V2 is selected for the generation pipeline: ten ranked
+    candidates, no score threshold, no page deduplication, no fallback.
+  - A frozen, typed policy (`founderlens.retrieval.policy`, policy
+    `f20913f1c1ec`) and one entry point, `load_policy_retriever`, that
+    verifies V2 and the BM25 configuration and loads no embedding model.
+  - Decision record with evidence, alternatives and limitations
+    ([retrieval_strategy.md](retrieval_strategy.md)). Dense and hybrid stay
+    available as evaluated alternatives.
+
+  *(implemented; a development-informed decision, not a general superiority
+  claim; answer quality unmeasured)*
 
 **Acceptance criteria.** Index build is reproducible from processed chunks;
 retrieval metrics (see evaluation protocol) are reported for BM25 and dense
-on the development split, from actual runs. *(met locally: reproducible V2
-index and embeddings; development-split metrics from two identical benchmark
-runs, Commit 3.4. Remote CI not verified.)*
+on the development split, from actual runs; one retrieval path is selected
+for generation from recorded evidence. *(met locally: reproducible V2 index
+and embeddings; development-split metrics from identical benchmark runs,
+Commits 3.4 and 4.2; policy verified against the local V2 artifact,
+Commit 4.3. Remote CI not verified.)*
 
 ## Stage 4 — Grounded RAG Generation
 
@@ -150,6 +164,9 @@ runs, Commit 3.4. Remote CI not verified.)*
 **Deliverables.** OpenAI API integration (key read from environment only);
 prompt that constrains answers to provided context; structured output with
 document/page citations; citation validation against retrieved chunks.
+Retrieval comes from `load_policy_retriever` (BM25 V2, up to ten
+candidates); context selection and token budgeting from those candidates are
+part of this stage.
 
 **Acceptance criteria.** Every citation refers to a retrieved chunk; tests mock
 the API client; no key needed for the test suite.

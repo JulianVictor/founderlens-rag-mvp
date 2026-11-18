@@ -6,5 +6,6 @@ that dense retrieval will reuse. Commit 3.2 adds the token-length audit and
 embedding artifact pipeline (``embeddings``; the model loads lazily, never on
 import). Commit 3.3 adds exact dense (cosine) retrieval over the validated
 embedding artifact (``dense``). Commit 4.1 adds reciprocal rank fusion of
-the two over the same V2 collection (``hybrid``).
+the two over the same V2 collection (``hybrid``). Commit 4.3 freezes the
+retrieval path for generation, BM25 on V2 with ten candidates (``policy``).
 """

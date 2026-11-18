@@ -6,10 +6,10 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Commits 3.1–3.4 and 4.1.** Stages 1 and 2
+> **Current status: Commits 3.1–3.4 and 4.1–4.3.** Stages 1–3
 > are complete: the project foundation, a verified four-document corpus, a
-> human-reviewed frozen evaluation dataset, and page-aware extraction,
-> normalization and chunking. Implemented so far:
+> human-reviewed frozen evaluation dataset, page-aware extraction,
+> normalization and chunking, and retrieval. Implemented so far:
 > - a BM25 lexical retrieval baseline;
 > - a local embedding pipeline, with token-budgeted chunking V2 (164 chunks,
 >   all within the model's 256-token limit) fully embedded;
@@ -17,12 +17,14 @@ reproducible evaluation.
 > - a deterministic **development-split** retrieval benchmark comparing the
 >   two;
 > - reciprocal-rank-fusion hybrid retrieval over the same V2 collection,
->   compared with both baselines on the development split (no default
->   retriever selected).
+>   compared with both baselines on the development split;
+> - a frozen retrieval policy for generation: **BM25 on V2, ten candidates**
+>   ([decision record](docs/retrieval_strategy.md)).
 >
-> Retrieval quality is measured only for BM25 and dense, on the 19
-> answerable development questions; the held-out split has not been used. Generation, answer
-> evaluation, the demo UI and deployment are **not implemented yet**. See
+> Retrieval quality is measured for BM25, dense and hybrid on the 19
+> answerable development questions only; the held-out split has not been
+> used. Generation (Stage 4, next), answer evaluation, the demo UI and
+> deployment are **not implemented yet**. See
 > [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
@@ -129,6 +131,8 @@ python -m founderlens.evaluation.benchmark --include-hybrid  # reports/retrieval
 # Hybrid retrieval (RRF of BM25 and dense, both on V2)
 python -m founderlens.retrieval.hybrid --query "NVIDIA Blackwell"
 python -m founderlens.retrieval.hybrid --smoke  # reports/hybrid_smoke_report.<id>.json
+# Selected retrieval policy for generation (BM25 on V2, top 10): verify artifacts
+python -m founderlens.retrieval.policy
 ```
 
 PyTorch is a pinned runtime dependency. On Windows and macOS the PyPI wheel
@@ -347,7 +351,8 @@ real-corpus checks: CI never downloads the financial PDFs.
   retriever's results.
 - `python -m founderlens.retrieval.hybrid --query "..."` (V2 only; `--json`,
   `--smoke`).
-- Evaluated on the dev split in Commit 4.2 (below); not the default retriever.
+- Evaluated on the dev split in Commit 4.2 (below); not selected for
+  generation in Commit 4.3, kept as an evaluated alternative.
 
 **Implemented (Commit 4.2), see [docs/retrieval_evaluation.md](docs/retrieval_evaluation.md#three-way-comparison-with-hybrid-rrf-commit-42):**
 - `python -m founderlens.evaluation.benchmark --include-hybrid` runs BM25,
@@ -380,8 +385,33 @@ real-corpus checks: CI never downloads the financial PDFs.
   - At k = 10 hybrid trailed BM25 on two questions.
   - Warm hybrid queries took 17.9 / 23.2 ms (p50 / p95) against 1.4 / 2.1 ms
     for BM25 on this machine.
-- **No default retrieval strategy is selected.** These are exploratory,
-  page-level, development-only numbers.
+- These are exploratory, page-level, development-only numbers. No strategy
+  was selected in Commit 4.2.
+
+**Implemented (Commit 4.3), see [docs/retrieval_strategy.md](docs/retrieval_strategy.md):**
+- Decision: generation will retrieve with **BM25 on collection V2**
+  (`0c2f87411627`, BM25 config `c21bdd0691f8`), **ten ranked candidates**,
+  no score threshold, no page deduplication and no fallback to dense or
+  hybrid.
+  - Evidence: at k = 5 BM25 matched hybrid on Recall@5 (0.947) and fact
+    coverage@5 (0.829). Hybrid's higher complete coverage@5 and MRR@10 were
+    inconclusive, and BM25 had the lowest warm latency without a
+    transformer model.
+  - BM25 at k = 10: Recall 1.000, fact coverage 0.947, complete coverage
+    0.857 (development split, page-level).
+  - Development-informed, not a general superiority claim. Answer quality is
+    unmeasured.
+- `founderlens.retrieval.policy`: the frozen `RetrievalPolicy` (policy ID
+  `f20913f1c1ec`) and `load_policy_retriever(settings)`, the entry point for
+  generation. It verifies V2's configuration and pinned SHA-256 and the BM25
+  configuration, builds the index once and returns up to ten ranked chunks
+  with their original text and provenance. It needs no PyTorch, embedding
+  model or embedding files, and no benchmark reports.
+- `python -m founderlens.retrieval.policy [--json]` checks the policy against
+  the local artifacts.
+- The benchmark's primary k stays 5; ten candidates is the generation input,
+  not the final LLM context. Existing CLIs are unchanged (BM25 still
+  defaults to V1 and top 5).
 
 **Not implemented:** generation,
 citations, abstention, answer-level evaluation and the judge, the Streamlit
@@ -391,8 +421,8 @@ demo, deployment. No held-out results exist.
 
 1. Project Foundation & Dataset — *complete; benchmark frozen*
 2. Document Ingestion Pipeline
-3. Retrieval & Vector Search
-4. Grounded RAG Generation
+3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
+4. Grounded RAG Generation — *next*
 5. Cross-Document Reasoning & Guardrails
 6. RAG Evaluation & Benchmarking
 7. Streamlit Interactive Demo
