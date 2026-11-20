@@ -7,9 +7,10 @@
 > Commit 4.2 (three-way development benchmark) implemented; Commit 4.3
 > selects BM25 on V2 (top 10) as the retrieval path for generation
 > ([retrieval_strategy.md](retrieval_strategy.md)), completing Stage 3.
-> Stage 4: Commits 5.1 (typed OpenAI provider layer) and 5.2 (evidence
-> context and grounded prompt, no LLM call) implemented; grounded answers,
-> citations and abstention are not implemented.
+> Stage 4: Commits 5.1 (typed OpenAI provider layer), 5.2 (evidence context
+> and grounded prompt) and 5.3 (structured grounded generation with basic
+> reference checks, offline-verified) implemented; citation resolution
+> (5.4) is not implemented.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -21,8 +22,8 @@
 >   shared result type, token-length audit, embedding artifact pipeline and
 >   exact dense retrieval, RRF hybrid retrieval, the frozen retrieval
 >   policy);
-> - `founderlens.generation` (OpenAI provider layer, evidence context and
->   grounded prompt construction).
+> - `founderlens.generation` (OpenAI provider layer, evidence context,
+>   grounded prompt, structured answer schema and generation service).
 >
 > Everything else below is the **planned** design and may change as
 > evaluation results come in.
@@ -847,7 +848,9 @@ retrieval, and retrieval does not import it.
   root is an object. Every object in it, including nested models under
   `$defs` reached through `$ref`, must use `extra="forbid"`, list every
   property as required and have no defaults; optional values are written
-  `X | None`. Open-ended mappings (`dict[str, X]`) and the keywords
+  `X | None`. A `$ref` must stand alone (no sibling keys such as a
+  description; added in Commit 5.3). Open-ended mappings (`dict[str, X]`)
+  and the keywords
   `allOf`, `not`, `if`/`then`/`else`, `dependentRequired`,
   `dependentSchemas` and `default` are rejected before any request. This is
   a focused check for strict mode, not a general JSON Schema compatibility
@@ -1187,10 +1190,179 @@ identical.
   query.
 - None of this measures answer quality.
 
-## Generation and citation interfaces (planned, Commits 5.3–5.4)
+## Structured grounded generation (Commit 5.3)
 
-Indicative contracts, not yet implemented apart from retrieval, the provider
-and the context layer:
+`founderlens.generation.answer` defines the response contract.
+`founderlens.generation.service` composes the existing retriever, context
+builder and provider. It adds no new retrieval, provider, prompt or
+orchestration framework.
+
+**Answer schema** `GroundedAnswer`. It is strict Pydantic (`extra="forbid"`,
+every field required, no defaults, frozen):
+
+```json
+{"status": "answered | partially_answered | insufficient_evidence",
+ "claims": [{"text": "...", "claim_type": "reported | calculated | synthesis",
+             "evidence_ids": ["E01"]}],
+ "limitations": ["..."]}
+```
+
+- **Model-facing descriptions** explain the semantics:
+  - `reported` covers directly stated facts, including clearly labelled
+    guidance;
+  - `calculated` is a figure derived from cited values;
+  - `synthesis` is a supported non-numerical interpretation or comparison;
+  - `limitations` must describe what is missing and must not carry uncited
+    facts.
+- The schema is sent unchanged through the provider's `strict_output_format`.
+  The status and claim-type semantics sit in the enum descriptions because a
+  `$ref` with sibling keys is not accepted in strict mode. Commit 5.3 also
+  makes `strict_output_format` reject that case; the SDK's own strict helper
+  unrolls such refs for the same reason.
+- **Not model-generated:** there is no free-form answer field, and no
+  document IDs, pages, URLs, offsets, scores, hashes or configuration
+  identities. Those stay trusted application metadata.
+- The committed prompt `grounded-financial-v1` (`2a45c8422c20`, 287 tokens)
+  is unchanged.
+
+**Response invariants** (version 1, checked locally after parsing):
+
+| Status | Claims | Limitations |
+|---|---|---|
+| `answered` | at least one | none |
+| `partially_answered` | at least one | at least one |
+| `insufficient_evidence` | none | at least one |
+
+- Every claim must have non-blank text and cite at least one ID matching
+  `E` plus two digits.
+- Every cited ID must exist in this request's evidence registry. Excluded
+  candidates never get an ID, so citing one fails.
+- IDs are request-scoped labels. `E01` in one run and `E01` in another can
+  point to different chunks, and membership cannot detect where an ID came
+  from: it only guarantees that every cited ID resolves against *this* run's
+  registry. That registry is kept on the result, so references are always
+  resolved against the evidence the model actually saw.
+- Citing the same ID twice in one claim is rejected.
+- Limitations must not be blank.
+- A violation raises `ResponseContractError` (category `response_contract`,
+  with the request ID). The message never quotes answer text. Nothing is
+  dropped or repaired, and no second call is made.
+- Passing means *structurally* valid only: it is not evidence of factual
+  support. Whether `limitations` contains uncited facts cannot be enforced by
+  schema validation either.
+
+**Schema identity** `e3ec802e2267`:
+- The SHA-256 of the canonical answer schema version 1, response-invariant
+  version 1, evidence-ID syntax, duplicate policy and the exact `text.format`
+  object, descriptions included.
+- It is recorded on every run, separately from the retrieval, context,
+  prompt and generation identities and from per-request hashes.
+
+**Schema token allocation** (local `o200k_base` counts of the exact `text`
+parameter, verified equal to the SDK's wire bytes):
+
+| Part | Local tokens |
+|---|---|
+| Schema JSON | 461 |
+| Wrapper | 22 |
+| Whole `text` parameter | 481 |
+| Provisional framing allowance | 1,024 |
+| Remaining | 543 |
+
+- The service refuses to start if the schema does not fit the allowance.
+- The remainder does not prove that the API's own framing fits: provider
+  usage must be checked in authorized live runs.
+- The 6,144-token input limit, the 1,024 output tokens and the ten
+  candidates are unchanged.
+
+**Service** `GroundedGenerationService(retriever, counter, provider)`:
+- Dependencies are injected: one loaded policy retriever, one tokenizer and
+  one provider. The service checks that the provider's `config_id` equals
+  the generation configuration used for the context budget.
+- `answer(question)` steps:
+  1. `prepare_generation_input`: validation, retrieval and the context.
+  2. For `empty_retrieval` or `no_evidence_fits`, a **local**
+     `insufficient_evidence` answer. The provider is not called, and the
+     reason is recorded. The limitation text says no matching evidence was
+     retrieved, or that it did not fit the budget, and that this does not
+     show the documents lack the facts.
+  3. For `evidence_selected`, exactly one
+     `provider.generate_structured(prepared.request, GroundedAnswer)` call.
+  4. `validate_answer` against the same prepared registry.
+- Invalid questions, incompatible artifacts, malformed candidates, every
+  provider error and contract violations are raised, never converted into
+  abstentions. There is no orchestration retry, no model fallback and no
+  repair call.
+
+**Result** `GenerationRunResult` (frozen):
+- the answer;
+- the origin (`model` or `local`) and the local abstention reason;
+- the original `PreparedGenerationInput`: request, evidence registry,
+  exclusions, budget and identities;
+- the provider result: requested and returned model, response and request
+  IDs, provider-reported usage and latency. It is `None` for local
+  abstentions, so no usage or IDs are fabricated;
+- the answer schema ID;
+- context, provider and total durations.
+
+`abstained` is the deterministic abstention flag (`insufficient_evidence`)
+for the evaluation protocol. `metadata()` separates:
+- `context`: deterministic for identical inputs;
+- `generation`: origin, statuses, claim count and types, cited IDs;
+- `runtime`: durations and provider metadata.
+
+None of these contain question, evidence, prompt, claim or limitation text,
+raw provider errors or keys. Logs carry only statuses, counts, identities,
+timing and error categories. The controlled objects (`answer`, `prepared`,
+`provider_result`) are kept apart from this operational metadata.
+
+**Immutability.**
+- `GroundedAnswer` and `Claim` are frozen Pydantic models whose collections
+  are tuples: assignment and deletion raise, and there is no `append`.
+- `GenerationRunResult` is a frozen dataclass, and the prepared input and
+  its registry are frozen too.
+- `model_copy(update=...)` returns a new, unvalidated object and leaves the
+  validated result unchanged.
+- This is ordinary Python immutability, not protection against hostile
+  in-process code.
+
+**Verification.**
+- Offline: 50 service tests use a fake `LLMProvider` and the real
+  `OpenAIProvider` over a mocked HTTP transport. The mocked request carries
+  exactly the frozen model, prompt, serialized evidence, strict schema,
+  1,024 output tokens, reasoning `none`, `store=false` and `stream=false`,
+  and nothing else.
+- Real corpus: the opt-in real tests run the actual V2 collection and
+  tokenizer with a synthetic provider response. Those responses are
+  placeholders, not generated answers.
+- Live: no live model call has been made with this schema, so API
+  acceptance, model compliance, answer quality and actual token usage are
+  unverified.
+
+**Live smoke** (`tests/test_generation_service_live.py`, PAID, manual only):
+- It runs only with `FOUNDERLENS_RUN_LIVE_RAG_TESTS=1`. A key or the
+  provider's `FOUNDERLENS_RUN_LIVE_LLM_TESTS` flag never enables it.
+- Three scenarios, with questions written for it without consulting the
+  evaluation files: evidence present; candidates retrieved but the requested
+  fact absent; and an empty retrieval, which must make no request.
+- At most two paid requests, enforced before sending, with SDK retries
+  disabled (`max_retries=0`; `config_id` unchanged).
+- Refusals, incomplete outputs and contract violations are printed as
+  semantic observations. Transport, authentication and schema-rejection
+  errors fail the test.
+- It prints statuses, cited IDs, usage and latency, but no prompts, evidence,
+  answer text or keys. A pass shows API compatibility, not correctness.
+- Running it sends up to ten public-source evidence chunks per request to
+  OpenAI (`store=false`). Command (with `OPENAI_API_KEY` set):
+
+  ```powershell
+  $env:FOUNDERLENS_RUN_LIVE_RAG_TESTS = "1"; python -m pytest tests/test_generation_service_live.py -q
+  ```
+
+## Generation and citation interfaces (planned, Commit 5.4)
+
+Indicative contracts, not yet implemented apart from retrieval, the provider,
+the context layer and structured generation:
 
 - Retrieval: `load_policy_retriever(settings).search(question)` returns up to
   ten `RetrievalResult`s (rank, raw BM25 score, original `ChunkRecord` with
@@ -1201,10 +1373,13 @@ and the context layer:
 - Context: `prepare_generation_input(question, retriever, counter)` returns a
   `PreparedGenerationInput` (request, evidence registry, budget, identities).
   Implemented in Commit 5.2.
-- `answer(question, evidence) -> GroundedAnswer`: answer text, citations by
-  evidence ID resolved through the registry, `abstained: bool`, token usage,
-  latency. Planned for Commits 5.3 (structured grounded generation) and 5.4
-  (citation and response validation).
+- Generation: `GroundedGenerationService(retriever, counter, provider)
+  .answer(question)` returns a `GenerationRunResult` with a `GroundedAnswer`
+  whose evidence IDs exist in the request's registry. Implemented in Commit
+  5.3.
+- Citations: resolving each cited evidence ID to document, page and source
+  through the registry, plus response validation for display. Planned for
+  Commit 5.4.
 
 The provider is passed in, so tests substitute a mocked transport or a
 fake `LLMProvider`.
@@ -1258,7 +1433,7 @@ pass.
 | `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2), frozen retrieval policy and generation-facing BM25 V2 entry point (Commit 4.3; no model needed) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch (dense and embeddings only) |
-| `generation` *(provider and context layers implemented, Commits 5.1–5.2)* | OpenAI Responses provider, configuration, typed results and errors; evidence validation, token budgeting, evidence registry and grounded prompt v1 (done); structured answers, citations and abstention planned (5.3–5.4) | openai, pydantic (provider); tiktoken, retrieval policy and types (context) |
+| `generation` *(provider, context and structured generation implemented, Commits 5.1–5.3)* | OpenAI Responses provider, configuration, typed results and errors; evidence validation, token budgeting, evidence registry and grounded prompt v1; answer schema, response invariants, local abstention and the generation service (done); citation resolution planned (5.4) | openai, pydantic (provider); tiktoken, retrieval policy and types (context) |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |
 

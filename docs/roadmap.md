@@ -8,7 +8,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
 | 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
-| 4 | Grounded RAG Generation | In progress (Commits 5.1 provider and 5.2 evidence context implemented; structured answers, citations and abstention not implemented) |
+| 4 | Grounded RAG Generation | In progress (Commits 5.1 provider, 5.2 evidence context and 5.3 structured generation implemented; citation resolution not implemented; no live generation verified) |
 | 5 | Cross-Document Reasoning & Guardrails | Planned |
 | 6 | RAG Evaluation & Benchmarking | Planned |
 | 7 | Streamlit Interactive Demo | Planned |
@@ -184,7 +184,21 @@ part of this stage. Commits:
   JSON input, context configuration `0e7fd58314ff` and a context smoke
   report ([architecture.md](architecture.md#evidence-context-and-grounded-prompt-commit-52)).
   *(implemented; no LLM call; answer quality unmeasured)*
-- Commit 5.3: structured grounded generation. *(planned)*
+- Commit 5.3: structured grounded generation.
+  - `GroundedAnswer`: answered / partially_answered / insufficient_evidence;
+    claims typed reported / calculated / synthesis, each citing evidence
+    IDs; limitations.
+  - Strict schema `e3ec802e2267`, 481 local tokens of the 1,024-token
+    allowance.
+  - Local response invariants and request-scoped ID checks.
+  - `GroundedGenerationService`: one structured provider call for
+    `evidence_selected`; local abstention, without a call, for empty
+    retrieval or no fitting evidence. Provider errors are raised, never
+    converted, with no retry or repair.
+  ([architecture.md](architecture.md#structured-grounded-generation-commit-53))
+  *(implemented; offline-verified with fake and mocked providers; the live
+  smoke `tests/test_generation_service_live.py` exists but has not been run;
+  answer quality unmeasured)*
 - Commit 5.4: citation and response validation. *(planned)*
 
 **Acceptance criteria.** Every citation refers to a retrieved chunk; tests mock

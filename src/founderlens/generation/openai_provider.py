@@ -121,6 +121,11 @@ def _schema_problems(node: object, path: str, problems: list[str]) -> None:
         return
     for key in sorted(_UNSUPPORTED_SCHEMA_KEYWORDS & set(node)):
         problems.append(f"{path}: keyword {key!r} is not supported in strict mode")
+    if "$ref" in node and len(node) > 1:
+        # The SDK's own strict helper unrolls these because the API rejects them.
+        problems.append(
+            f"{path}: $ref must not have sibling keys (move descriptions to the target)"
+        )
     properties = node.get("properties")
     if node.get("type") == "object" or isinstance(properties, dict):
         names = sorted(properties) if isinstance(properties, dict) else []

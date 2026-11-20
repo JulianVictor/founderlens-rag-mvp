@@ -45,8 +45,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         status = "present" if path.is_dir() else "not created"
         print(f"{label:<16}{path} ({status})")
     print(
-        "Status: OK (page extraction, normalization, chunking, BM25, dense and hybrid "
-        "retrieval and the OpenAI provider implemented; grounded generation not implemented)"
+        "Status: OK (extraction, chunking, BM25/dense/hybrid retrieval, OpenAI provider and "
+        "structured grounded generation implemented; citation resolution not implemented)"
     )
     return 0
 
