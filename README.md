@@ -6,7 +6,7 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Commits 3.1–3.4, 4.1–4.3 and 5.1.** Stages 1–3
+> **Current status: Commits 3.1–3.4, 4.1–4.3, 5.1 and 5.2.** Stages 1–3
 > are complete: the project foundation, a verified four-document corpus, a
 > human-reviewed frozen evaluation dataset, page-aware extraction,
 > normalization and chunking, and retrieval. Implemented so far:
@@ -21,7 +21,9 @@ reproducible evaluation.
 > - a frozen retrieval policy for generation: **BM25 on V2, ten candidates**
 >   ([decision record](docs/retrieval_strategy.md));
 > - Stage 4 has started: a typed OpenAI LLM provider layer (Commit 5.1),
->   offline-tested only and not yet connected to retrieval.
+>   offline-tested only, and deterministic evidence-context and grounded
+>   prompt construction (Commit 5.2) over the frozen retrieval policy. No
+>   LLM has been called with retrieved evidence.
 >
 > Retrieval quality is measured for BM25, dense and hybrid on the 19
 > answerable development questions only; the held-out split has not been
@@ -82,6 +84,7 @@ Details and a Mermaid diagram: [docs/architecture.md](docs/architecture.md).
 | Embeddings | sentence-transformers 6.2.0, `all-MiniLM-L6-v2` (pinned revision), PyTorch 2.15.0 CPU | In use (Commit 3.2): chunking V2 fully embedded; no dense search yet |
 | Vector search | Exact NumPy dot product (164 × 384); FAISS not needed at this size | In use (Commit 3.3) |
 | LLM provider | OpenAI Python SDK 3.55.0 (Responses API), `gpt-5.4-mini-2026-03-17`, Pydantic 2.14.3 | Provider layer implemented (Commit 5.1); grounded generation planned |
+| Generation token counting | tiktoken 0.14.0, `o200k_base` (prepared local asset) | In use for context budgets (Commit 5.2) |
 | Demo | Streamlit | Planned (Stage 7) |
 
 ## Local setup (Windows PowerShell)
@@ -135,6 +138,11 @@ python -m founderlens.retrieval.hybrid --query "NVIDIA Blackwell"
 python -m founderlens.retrieval.hybrid --smoke  # reports/hybrid_smoke_report.<id>.json
 # Selected retrieval policy for generation (BM25 on V2, top 10): verify artifacts
 python -m founderlens.retrieval.policy
+# Generation tokenizer asset (o200k_base, ~3.6 MB, one-time network fetch, then offline)
+python -m founderlens.generation.token_budget prepare
+python -m founderlens.generation.token_budget check
+# Evidence context for the smoke queries (no LLM call) -> reports/context_smoke_report.json
+python -m founderlens.generation.context --smoke
 ```
 
 PyTorch is a pinned runtime dependency. On Windows and macOS the PyPI wheel
@@ -167,6 +175,8 @@ python -m founderlens.corpus.validate        # needs the PDFs locally
 python -m founderlens.ingestion.extract     # needs the PDFs locally
 $env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_corpus_real.py tests/test_ingestion_real.py -q
 python -m pytest tests/test_generation_openai.py -q   # offline provider tests, no key
+python -m pytest tests/test_generation_context.py -q  # offline context tests, no tokenizer asset
+$env:FOUNDERLENS_REAL_TOKENIZER = "1"; $env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_generation_context_real.py -q
 # Opt-in PAID live smoke test (two tiny calls, synthetic text); never run by CI
 $env:FOUNDERLENS_RUN_LIVE_LLM_TESTS = "1"; python -m pytest tests/test_generation_openai_live.py -q
 ```
@@ -457,8 +467,41 @@ and makes no paid calls; the live LLM test is skipped unless
   are unverified, and no API credits have been used. Hosted outputs are not
   bitwise reproducible.
 
-**Not implemented:** retrieval-to-LLM integration, evidence context and
-grounded prompts, grounded answers, citations, abstention, answer-level evaluation and the judge, the Streamlit
+**Implemented (Commit 5.2), see [docs/architecture.md](docs/architecture.md#evidence-context-and-grounded-prompt-commit-52):**
+- `prepare_generation_input(question, retriever, counter)` builds a
+  `PreparedGenerationInput` from the frozen BM25 V2 top-10 policy without
+  calling an LLM. It includes:
+  - the original question;
+  - a `GenerationRequest` (static trusted instructions plus deterministic
+    JSON of the question and evidence);
+  - an immutable evidence registry (`E01`..`E10` for included evidence only);
+  - excluded candidates with reasons;
+  - local token diagnostics;
+  - retrieval, context (`0e7fd58314ff`), prompt (`grounded-financial-v1`,
+    `2a45c8422c20`) and generation (`cbc4e415c848`) identities.
+- Questions are validated, never truncated (at most 512 local tokens).
+  Candidates must match the verified V2 collection exactly. Evidence is a
+  rank-ordered prefix of whole chunks within a 6,144-token local input limit
+  (8,192 total, with 1,024 reserved for output and a provisional 1,024 for
+  schema and framing).
+- Outcomes: `evidence_selected`, `empty_retrieval` and `no_evidence_fits` are
+  prepared states; invalid input and malformed candidates are errors.
+- Token counts use `tiktoken` 0.14.0 `o200k_base` from a prepared, verified
+  local asset. They are estimates, not provider usage, and never trigger a
+  download.
+- Smoke results: all ten candidates fit for every retrieving smoke query
+  (2,337–3,759 local tokens). A real 512-token question is accepted (3,386
+  tokens) and a 513-token one is rejected before retrieval.
+- A synthetic high-token stress case (the ten largest V2 chunks with a
+  512-token question) is 4,807. It is not a real request or a proven upper
+  bound. Two runs were identical.
+- Fresh checkout: run `python -m founderlens.generation.token_budget prepare`
+  once (network) or `prepare --from-file <path>`. The default tests do not
+  need it.
+- Prompt injection is mitigated by keeping trusted and untrusted text apart
+  and serializing safely. It is not prevented; model compliance is untested.
+
+**Not implemented:** retrieval-to-LLM integration, grounded answers, citations, abstention, answer-level evaluation and the judge, the Streamlit
 demo, deployment. No held-out results exist.
 
 ## Roadmap
@@ -466,7 +509,7 @@ demo, deployment. No held-out results exist.
 1. Project Foundation & Dataset — *complete; benchmark frozen*
 2. Document Ingestion Pipeline
 3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
-4. Grounded RAG Generation — *in progress (5.1 provider layer)*
+4. Grounded RAG Generation — *in progress (5.1 provider, 5.2 evidence context)*
 5. Cross-Document Reasoning & Guardrails
 6. RAG Evaluation & Benchmarking
 7. Streamlit Interactive Demo

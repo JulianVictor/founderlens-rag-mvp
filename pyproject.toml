@@ -46,6 +46,12 @@ dependencies = [
     # transitively; declared because generation imports it directly.
     # License: MIT.
     "pydantic==2.14.3",
+    # Local generation-token counting (Commit 5.2): o200k_base, tiktoken's
+    # mapping for the GPT-5 family. 0.14.0 is the latest stable release; it
+    # adds requests, urllib3, certifi and charset-normalizer (unpinned upstream;
+    # used only by the explicit `token_budget prepare` download) and reuses the
+    # installed regex. Verified with pip check on CPython 3.12. License: MIT.
+    "tiktoken==0.14.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

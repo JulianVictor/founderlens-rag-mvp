@@ -8,7 +8,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
 | 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
-| 4 | Grounded RAG Generation | In progress (Commit 5.1 provider layer implemented; grounding, citations and abstention not implemented) |
+| 4 | Grounded RAG Generation | In progress (Commits 5.1 provider and 5.2 evidence context implemented; structured answers, citations and abstention not implemented) |
 | 5 | Cross-Document Reasoning & Guardrails | Planned |
 | 6 | RAG Evaluation & Benchmarking | Planned |
 | 7 | Streamlit Interactive Demo | Planned |
@@ -175,7 +175,15 @@ part of this stage. Commits:
   live smoke test ([architecture.md](architecture.md#llm-provider-commit-51)).
   *(implemented; offline-tested only; live test not run; no retrieval
   integration)*
-- Commit 5.2: evidence context and grounded prompts. *(planned)*
+- Commit 5.2: evidence context and grounded prompts. Covers question and
+  candidate validation against the verified V2 collection, rank-ordered
+  whole-chunk prefix selection within a 6,144-token local input limit
+  (`tiktoken` 0.14.0, `o200k_base`, prepared offline asset), and an
+  immutable evidence registry with request-scoped `E01`..`E10`. It also adds
+  grounded prompt `grounded-financial-v1` (`2a45c8422c20`), deterministic
+  JSON input, context configuration `0e7fd58314ff` and a context smoke
+  report ([architecture.md](architecture.md#evidence-context-and-grounded-prompt-commit-52)).
+  *(implemented; no LLM call; answer quality unmeasured)*
 - Commit 5.3: structured grounded generation. *(planned)*
 - Commit 5.4: citation and response validation. *(planned)*
 
