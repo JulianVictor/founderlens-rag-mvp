@@ -1809,7 +1809,7 @@ from real results and versioned as a new policy.
 
 ## Diagnostic generation evaluation (Stage 5, Commit 6.3)
 
-`founderlens.evaluation.generation_eval` implements protocol v1.2 §13: a
+`founderlens.evaluation.generation_eval` implements protocol §13 (v1.2) and §14 (v1.3): a
 development-split, deterministic **diagnostic** report
 (`evaluation_kind: diagnostic_deterministic`). It measures the frozen
 baseline and its guardrail findings. It is not answer-quality evaluation:
@@ -1863,6 +1863,21 @@ every fact has an accepted selected page (12/14). Both equal the frozen
 benchmark's Recall@10 and complete coverage@10 and do not depend on the
 provider. `accepted_page_citation_overlap` is a reference-alignment
 diagnostic, not semantic citation precision or claim support.
+
+**Execution-complete reporting** (protocol v1.3, record schema 3,
+`founderlens.evaluation.completion`). Failures are classified by stage and
+category into model-output, infrastructure or integrity failures (unknown
+combinations are integrity). Every record stores its `protocol_version` and
+terminal `execution_outcome`. Runs are `answer_complete`,
+`execution_complete` (model-output failures counted) or `incomplete`;
+reportability needs a live origin, protocol 1.3 and one of the first two
+states. Reports add unconditional outcome views and per-metric
+`excluded_scheduled` counts. The budgeted provider keeps the request
+actually sent, so a failed question keeps its selected evidence (IDs,
+documents, pages) without a second retrieval. Live runs are
+pre-registered in an append-only `run_log.jsonl` before any provider
+exists. Schema 1 and 2 records keep protocol 1.2 semantics and are never
+upgraded.
 
 **Failure diagnostics** (record schema 2). `validate_answer()` builds typed
 `ContractProblem` records (code, positions, sanitized evidence ID) next to the
@@ -1949,7 +1964,7 @@ pass.
 |------------------|----------------|------------|
 | `config` *(implemented)* | Project root and path resolution | stdlib |
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
-| `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); Stage 5 diagnostic generation evaluation (`generation_eval`, protocol v1.2 §13); formal answer evaluation and judge planned | config, corpus manifest, retrieval |
+| `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); Stage 5 diagnostic generation evaluation (`generation_eval`, `completion`; protocol §13–§14); formal answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2), frozen retrieval policy and generation-facing BM25 V2 entry point (Commit 4.3; no model needed) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch (dense and embeddings only) |
 | `guardrails` *(scope diagnostics, Commit 6.1)* | Corpus vocabulary from the manifest, explicit company and period recognition, manifest / selected / cited coverage; per-claim company, period and numeric checks and question coverage findings (Commit 6.2); all diagnostic only | corpus manifest, generation evidence records |

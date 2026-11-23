@@ -668,8 +668,20 @@ and makes no paid calls; the live LLM test is skipped unless
   `response_contract` failure makes it incomplete and **not reportable**.
 - Failed questions keep safe diagnostics (record schema 2): stage, invariant
   codes with positions, the provider request ID and, for a rejected answer,
-  its provider-reported usage. Answer text is never stored, and usage totals
-  say when some attempted request has no recorded usage.
+  its provider-reported usage. A rejected answer's text is never stored, and
+  usage totals say when some attempted request has no recorded usage.
+- Privacy: the git-ignored per-question records keep each *successful*
+  validated answer (claim text, limitations, evidence IDs) and its citation
+  associations so it can be replayed without another request, and are private
+  internal artifacts; they never contain question text, prompts or passages.
+  Aggregate JSON, Markdown summaries and the run log hold only IDs, codes and
+  counts.
+- Protocol v1.3 (prospective, record schema 3): runs are `answer_complete`,
+  `execution_complete` (model-output failures such as a rejected answer are
+  counted, not hidden) or `incomplete` (infrastructure, integrity or
+  guardrail failures, unrun questions). The reported run is the first
+  pre-registered execution-complete live run, logged in
+  `reports/generation_eval/run_log.jsonl`. The v1.2 pilot stays incomplete.
 
 **Not implemented:** guardrail enforcement, claim-support
 verification, answer-level evaluation and the judge, the Streamlit demo,

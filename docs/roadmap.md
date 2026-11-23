@@ -231,7 +231,10 @@ answering outside the corpus.
 are evaluated separately with reported (not invented) results. Under
 protocol v1.2 §13 these are deterministic diagnostic results
 (`diagnostic_deterministic`) from an authorized real run; formal answer
-quality stays in Stage 6. Stage 5 remains in progress until such results
+quality stays in Stage 6. Under protocol v1.3 §14 the reported run is the
+first pre-registered execution-complete live run, with every model-output
+failure counted; the v1.2 pilot stays incomplete. Stage 5 remains in
+progress until such results
 are obtained and reported.
 
 Commits:

@@ -1,13 +1,15 @@
 # Evaluation Protocol
 
-> **Status: protocol v1.2.** It defines *how* the system will be evaluated.
-> No generation evaluation has been run; development-split retrieval results
+> **Status: protocol v1.3.** It defines *how* the system will be evaluated.
+> One authorized live diagnostic pilot has been run under v1.2 and is
+> incomplete (`live-20261123T111430692539Z-8665d379`); development-split retrieval results
 > are in [`retrieval_evaluation.md`](retrieval_evaluation.md). The question set
 > (dataset v1.0.0) has been **reviewed by the project owner**, who accepted all
 > 40 annotations without corrections, and is **frozen** (see
 > [`evaluation/README.md`](../evaluation/README.md)). v1.1 states the retrieval
 > metric definitions exactly (§3) and adds the benchmark freeze (§10). v1.2
-> adds a narrowly scoped Stage 5 diagnostic amendment (§13). The formal
+> adds a narrowly scoped Stage 5 diagnostic amendment (§13). v1.3 adds
+> prospective execution-complete reporting (§14). The formal
 > evaluation harness, including the LLM judge, is implemented in Stage 6.
 
 ## 1. Inputs
@@ -376,7 +378,8 @@ generation prompts, or judge prompts and calibration.
 A single command (Stage 6) will produce a versioned report in `reports/` with
 every metric above, per category and per split, plus the configuration record
 in §7. Only numbers from such runs may be quoted in documentation, with one
-exception: approved Stage 5 deterministic diagnostics (§13).
+exception: approved Stage 5 deterministic diagnostics (§13, with §14
+completion states for runs under v1.3).
 
 ## 13. Stage 5 diagnostic amendment (v1.2)
 
@@ -546,3 +549,113 @@ are git-ignored private evaluation artifacts.
 **Tuning.** Development results produced after any change motivated by them
 (for example Commit 6.4) are labelled post-tuning. Stage 6 human calibration
 (§8) is still required before any judge score is reported.
+
+
+## 14. Execution-complete reporting amendment (v1.3)
+
+**Why.** The first authorized live diagnostic run, `live-20261123T111430692539Z-8665d379`, ran under v1.2:
+24 scheduled questions, 24 provider attempts, 23 valid outcomes and one
+`response_contract` failure. v1.2 makes a run reportable only if every answer
+is valid. Repeating runs until one succeeds would then select for success:
+the reported failure rate would be zero by construction, and failures, which
+tend to occur on harder questions, would be filtered out. The pilot's failure
+motivated this amendment; no metric value did.
+
+**Prospective only.** v1.3 applies to runs started under it (record schema 3,
+`protocol_version: "1.3"`). Records of schemas 1 and 2 keep v1.2 semantics,
+including on replay, and are never upgraded. The pilot stays **incomplete and
+not reportable**; it may be cited only as a disclosed pilot.
+
+**Unchanged.** Questions, labels, accepted evidence, the frozen pipeline and
+identities, §13 metric definitions, the caveat, the judge design and §8
+calibration, isolation and the held-out freeze.
+
+**Execution outcomes.** Every scheduled question ends as exactly one of
+`valid_answer`, `local_abstention`, `model_output_failure`,
+`infrastructure_failure`, `integrity_failure` or `not_run` (budget, abort,
+interruption, or an unreplayable source).
+
+**Failure taxonomy** (stage and category together; anything not listed,
+including unknown combinations, is an integrity failure):
+
+| Class | Stage / category |
+|---|---|
+| model output | `answer_validation/response_contract` (the provider's parsed answer broke a response invariant), `generation/refusal`, `generation/incomplete`, `generation/structured_output_invalid` |
+| infrastructure | `generation/` `timeout`, `connection`, `rate_limited`, `provider_server_error`, `authentication`, `permission_denied`, `quota_exceeded`, `model_unavailable`, `configuration` |
+| integrity | everything else, e.g. `citation_resolution/*` (including the resolver's own `response_contract` revalidation), `replay_verification/*`, `generation/unexpected_response`, context errors, unknown categories |
+
+**Completion states** (mutually exclusive):
+
+| State | Definition | Reportable when the origin is live |
+|---|---|---|
+| `answer_complete` | every question has a valid answer or local abstention; every guardrail check completed | yes |
+| `execution_complete` | every question reached a terminal outcome; at least one model-output failure; nothing else wrong | yes, with every model-output failure counted |
+| `incomplete` | any infrastructure or integrity failure, guardrail failure, unrun question, interruption, abort, or structural problem (coverage, mixed identities, protocol or origin) | no |
+
+Reportability requires a live origin, protocol 1.3, one of the first two
+states, every scheduled question accounted for exactly once, and consistent
+frozen identities and provenance. A replay keeps its source run's protocol,
+origin and state. Dry runs and their replays are never hosted-model evidence.
+
+**Denominators.** Every metric states its eligible population, numerator and
+denominator; a zero denominator is `not_applicable`.
+- *Conditional* metrics (the §13 table) are over valid outcomes. Each one
+  reports `excluded_scheduled`: the scheduled questions of its population
+  and how many were left out, by outcome.
+- *Unconditional* metrics are over scheduled questions with a terminal
+  outcome, where a model-output failure is a separate outcome, never an
+  attempt, partial answer or abstention:
+  - the scheduled-question outcome distribution;
+  - `contract_valid_outcome_rate`: valid answers and local abstentions over
+    terminal questions;
+  - `model_output_failure_rate`: model-output failures over terminal
+    questions the provider answered;
+  - failure counts by class and category;
+  - unconditional answer-attempt, abstention and answered or partially
+    answered flags for answerable and unanswerable questions.
+- Retrieval (selected-evidence) metrics include a failed question when the
+  evidence of the request actually sent was recorded (`selected_evidence_source:
+  model_facing_request`: evidence IDs, documents and pages from that request,
+  tied to it by its hashes; nothing is retrieved again). Questions without a
+  recorded observation are excluded and counted, never reconstructed.
+- Answer-dependent metrics (cited coverage, accepted-page overlap, guardrail
+  findings) stay conditional on valid answers.
+- Sample sizes stay small (temporal n = 2, unanswerable n = 5): §13 counts-only
+  and small-sample rules still apply.
+
+**Selection rule and run log.** Report the first execution-complete live run
+under v1.3, and disclose every other run. Before any live provider exists,
+the harness appends a `preregistered` entry to the git-ignored
+`reports/generation_eval/run_log.jsonl`: run ID, UTC start, Git commit and
+clean state, protocol, dataset hashes, every frozen identity, the request cap
+and the selection rule. When the run ends it appends `finished`: completion
+state, reportability, outcome and failure counts, attempts, interruption and
+abort. A run with only a `preregistered` entry is unfinished. Entries are
+appended, flushed and never rewritten; the file is local and not
+tamper-proof. Runs left incomplete by infrastructure failures are disclosed
+and investigated; nothing is rerun automatically.
+
+**Disclosure.** Every report states the protocol, completion state, all
+model-output failures, missing provider usage (`usage_complete: false`) and
+sample sizes. None of this is answer correctness, faithfulness or semantic
+citation support, and Stage 6 judge calibration is still required. A
+contract-valid outcome is structurally valid under the response contract, not
+factually correct.
+
+**Artifact contents.**
+
+| Artifact | Contains | Never contains |
+|---|---|---|
+| per-question records (`*.records.jsonl`, private, git-ignored) | for valid answers: the validated structured answer (claim text, claim types, evidence IDs, limitations), citation associations, selected-evidence provenance, request hashes, usage, timings, guardrail metadata; for failures: the typed failure block, request hashes, evidence provenance from the sent request, provider usage | question text, prompts, passages, a rejected answer's text, raw provider errors, credentials |
+| aggregate JSON and Markdown summary | IDs, codes, counts, rates, identities | any question, answer, limitation or passage text |
+| run log | run IDs, timestamps, Git state, identities, dataset hashes, request cap, completion states, outcome counts | any question, answer or passage text |
+
+**Replay of failures.** A successful record replays without any provider
+request: the rebuilt request must match its stored hashes, and the stored
+answer is revalidated through the unchanged service and resolver. A recorded
+failure is never re-inferred: it replays as `not_replayable` with its original
+execution outcome, error category, typed failure block, request hashes and
+captured evidence provenance carried from the digest-checked source record.
+No new usage or provider attempt is recorded (the original usage stays in
+`replay_of`), so the replay reports the same completion state, reliability
+and retrieval metrics as its source.

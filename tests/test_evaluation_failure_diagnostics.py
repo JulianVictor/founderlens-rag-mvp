@@ -317,6 +317,7 @@ def test_non_contract_failures_record_a_generation_stage(tmp_path: pathlib.Path)
     assert failure == {
         "stage": "generation",
         "error_category": "rate_limited",
+        "classification": "infrastructure",
         "problems": [],
         "request_id": "req_rl",
         "status_code": 429,
@@ -344,12 +345,12 @@ def test_no_answer_question_or_credential_leakage(tmp_path: pathlib.Path) -> Non
 # --- record schema and replay ---------------------------------------------------------------
 
 
-def test_records_are_schema_2_and_failed_records_never_replay(tmp_path: pathlib.Path) -> None:
+def test_records_are_schema_3_and_failed_records_never_replay(tmp_path: pathlib.Path) -> None:
     live = _run(tmp_path, ContractProvider(INVALID["duplicate_id"][0]))
     records = ge.load_records(live.records_path)
-    assert {r["record_schema_version"] for r in records} == {2}
+    assert {r["record_schema_version"] for r in records} == {3}
     assert all("failure" in r for r in records)
-    assert live.report["record_schema_version"] == 2
+    assert live.report["record_schema_version"] == 3
     before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in tmp_path.rglob("*.*")}
     replayed = ge.execute(SPLIT, PIPELINE, tmp_path, mode="replay", provider_factory=ScriptProvider,
                           expected_identities=IDS, replay_records=records)  # fmt: skip
@@ -363,13 +364,22 @@ def test_records_are_schema_2_and_failed_records_never_replay(tmp_path: pathlib.
     ]
     assert replayed.report["run_complete"] is False
     assert replayed.report["original_run_usage"]["failed_requests_with_usage"] == 1
-    assert live.report["reportability"]["reportable_as_hosted_model_diagnostic"] is False
+    # Protocol v1.3: one model-output failure is counted, not disqualifying.
+    assert live.report["completion_state"] == "execution_complete"
+    assert live.report["reportability"]["reportable_as_hosted_model_diagnostic"] is True
+    assert replayed.report["completion_state"] == "execution_complete"  # the source's state
+
+
+SCHEMA_3_ONLY = frozenset(
+    {"record_sha256", "protocol_version", "execution_outcome", "selected_evidence_source"}
+)
 
 
 def _as_legacy(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Faithful schema-1 records: no failure block, no protocol 1.3 fields."""
     legacy = []
     for record in records:
-        body = {k: v for k, v in record.items() if k not in ("failure", "record_sha256")}
+        body = {k: v for k, v in record.items() if k not in SCHEMA_3_ONLY | {"failure"}}
         if record["outcome"] == "failed":
             body["usage"] = None  # schema 1 never kept a rejected answer's usage
         legacy.append(ge.seal({**body, "record_schema_version": 1}))
@@ -395,7 +405,7 @@ def test_legacy_schema_1_records_replay_without_invented_fields(tmp_path: pathli
     with pytest.raises(ge.EvaluationRunError, match="mix record schema versions"):
         ge.execute(SPLIT, PIPELINE, tmp_path / "m", mode="replay", provider_factory=ScriptProvider,
                    expected_identities=IDS, replay_records=mixed)  # fmt: skip
-    future = [ge.seal({**r, "record_schema_version": 3}) for r in legacy]
+    future = [ge.seal({**r, "record_schema_version": 4}) for r in legacy]
     with pytest.raises(ge.EvaluationRunError, match="unsupported record schema"):
         ge.execute(SPLIT, PIPELINE, tmp_path / "f", mode="replay", provider_factory=ScriptProvider,
                    expected_identities=IDS, replay_records=future)  # fmt: skip

@@ -1,4 +1,8 @@
-"""Development-split diagnostic generation evaluation (Commit 6.3, protocol v1.2 §13).
+"""Development-split diagnostic generation evaluation (protocol §13, v1.3 §14).
+
+New runs follow protocol v1.3 (record schema 3): completion states, the failure
+taxonomy and the run log live in :mod:`founderlens.evaluation.completion`.
+Records of schemas 1 and 2 keep protocol v1.2 semantics.
 
 Usage::
 
@@ -79,6 +83,21 @@ from founderlens.evaluation.benchmark import (
     gold_evidence,
     load_dev_split,
 )
+from founderlens.evaluation.completion import (
+    PROTOCOL_V12,
+    PROTOCOL_V13,
+    RUN_LOG_FILENAME,
+    SELECTION_RULE,
+    CompletionState,
+    append_run_log,
+    classification_table,
+    classify_failure,
+    completion_state,
+    exclusions,
+    execution_outcome,
+    record_protocol,
+    reliability_metrics,
+)
 from founderlens.evaluation.schema import Category, EvalQuestion
 from founderlens.generation.answer import (
     AnswerStatus,
@@ -119,10 +138,12 @@ from founderlens.guardrails.scope import CorpusVocabulary, analyzer_id
 from founderlens.retrieval.policy import PolicyRetriever
 
 EVALUATION_KIND: Final = "diagnostic_deterministic"
-PROTOCOL_VERSION: Final = "1.2"
+PROTOCOL_VERSION: Final = PROTOCOL_V13  # new runs; records keep the protocol they ran under
 # 2: failure diagnostics (stage, problem codes, request ID) and usage of rejected answers.
-RECORD_SCHEMA_VERSION: Final = 2
-REPLAYABLE_RECORD_SCHEMA_VERSIONS: Final = (1, 2)  # 1 is legacy: no failure diagnostics
+# 3: protocol_version, execution_outcome, failure classification, evidence provenance source.
+RECORD_SCHEMA_VERSION: Final = 3
+# 1 is legacy (no failure diagnostics); 1 and 2 keep protocol v1.2 semantics.
+REPLAYABLE_RECORD_SCHEMA_VERSIONS: Final = (1, 2, 3)
 REPORT_TYPE: Final = "generation_diagnostic_evaluation"
 CAVEAT: Final = (
     "These diagnostics do not establish answer correctness, faithfulness, claim-level "
@@ -308,6 +329,7 @@ class BudgetedProvider:
         self._inner = inner
         self.max_requests = check_max_requests(max_requests)
         self.attempts = 0
+        self.last_request: GenerationRequest | None = None  # the request actually sent
 
     @property
     def identity(self) -> ProviderIdentity:
@@ -322,6 +344,7 @@ class BudgetedProvider:
         if self.attempts >= self.max_requests:
             raise RequestBudgetExhausted("request budget exhausted; nothing was sent")
         self.attempts += 1
+        self.last_request = request
         return self._inner.generate_structured(request, schema)
 
     def close(self) -> None:
@@ -429,6 +452,7 @@ class Origin:
 
     mode: OriginMode
     run_id: str
+    protocol_version: str = PROTOCOL_VERSION  # a replay keeps its source run's protocol
 
     @property
     def synthetic(self) -> bool:
@@ -445,6 +469,7 @@ def _base_record(
     source = origin or Origin("live" if mode == "live" else "dry_run", run_id)
     return {
         "record_schema_version": RECORD_SCHEMA_VERSION,
+        "protocol_version": source.protocol_version,
         "run_id": run_id,
         "mode": mode,
         "origin_mode": source.mode,
@@ -454,6 +479,7 @@ def _base_record(
         "category": question.category.value,
         "answerable": question.answerable,
         "outcome": None,
+        "execution_outcome": None,
         "error_category": None,
         "origin": None,
         "local_abstention_reason": None,
@@ -462,6 +488,7 @@ def _base_record(
         "request": None,
         "answer": None,
         "selected_evidence": [],
+        "selected_evidence_source": None,  # prepared_input | model_facing_request
         "claims": [],
         "citations": [],
         "guardrails": {"status": "not_run", "report": None},
@@ -506,6 +533,7 @@ def _run_fields(run: GenerationRunResult) -> dict[str, Any]:
             "total_ms": round(run.total_ms, 3),
         },
         "local_token_estimate": prepared.budget.to_dict(),
+        "selected_evidence_source": "prepared_input",
     }
 
 
@@ -560,6 +588,33 @@ def _no_attempts() -> int:
     return 0
 
 
+RequestProbe = Callable[[], GenerationRequest | None]
+
+
+def _no_request() -> GenerationRequest | None:
+    return None
+
+
+def _record_request_evidence(record: dict[str, Any], request: GenerationRequest) -> None:
+    """Evidence provenance of a failed question, from the exact request that was sent.
+
+    The model-facing input already lists every selected evidence record with its ID,
+    document and page, so nothing is retrieved again; the request hashes tie the
+    provenance to that request. Text is never copied.
+    """
+    try:
+        evidence = json.loads(request.input_text)["evidence"]
+        rows = [{k: e[k] for k in ("evidence_id", "document_id", "page_number")} for e in evidence]
+    except (ValueError, KeyError, TypeError):
+        return  # unreadable: leave the observation missing rather than guess
+    record["selected_evidence"] = rows
+    record["selected_evidence_source"] = "model_facing_request"
+    record["request"] = {
+        "input_sha256": _sha256(request.input_text),
+        "instructions_sha256": _sha256(request.instructions),
+    }
+
+
 @dataclass(slots=True)
 class RunState:
     aborted: bool = False
@@ -586,6 +641,7 @@ def _failure_block(
     return {
         "stage": stage,
         "error_category": category,
+        "classification": classify_failure(stage, category).value,
         "problems": [dict(p) for p in problems],
         "request_id": request_id,
         "status_code": status_code,
@@ -622,6 +678,7 @@ def evaluate_question(
     *,
     attempts: AttemptCounter = _no_attempts,
     expected_citations: Sequence[Mapping[str, Any]] | None = None,
+    sent_request: RequestProbe = _no_request,
 ) -> dict[str, Any]:
     """One question: one generation, one resolution, one guardrail check."""
     before = attempts()
@@ -638,6 +695,9 @@ def evaluate_question(
         )
         _fail(record, error, stage)
         record["provider_attempted"] = attempts() > before
+        request = sent_request() if record["provider_attempted"] else None
+        if request is not None:
+            _record_request_evidence(record, request)
         if error.category in SYSTEMIC_CATEGORIES:
             state.aborted = True
             state.systemic_category = error.category
@@ -678,6 +738,7 @@ def run_questions(
     attempts: AttemptCounter = _no_attempts,
     expected: Mapping[str, Mapping[str, Any]] | None = None,
     origin: Origin | None = None,
+    sent_request: RequestProbe = _no_request,
 ) -> RunState:
     state = RunState()
     pending = list(questions)
@@ -691,6 +752,8 @@ def run_questions(
             elif expected is not None and (source is None or source.get("outcome") != COMPLETED):
                 record["outcome"] = NOT_REPLAYABLE
                 record["replay_of"] = _replay_origin(source)
+                if source is not None and source.get("outcome") == FAILED:
+                    _carry_source_failure(record, source)
             else:
                 record = evaluate_question(
                     question,
@@ -701,6 +764,7 @@ def run_questions(
                     state,
                     attempts=attempts,
                     expected_citations=None if source is None else source["citations"],
+                    sent_request=sent_request,
                 )
                 if source is not None:
                     record["replay_of"] = _replay_origin(source)
@@ -708,6 +772,7 @@ def run_questions(
                     record.update(usage=None, timings=None, provider=None)
                     if record.get("failure"):
                         record["failure"]["usage_recorded"] = False
+            record["execution_outcome"] = execution_outcome(record).value
             sink.write(record)
             pending.pop(0)
     except KeyboardInterrupt:
@@ -715,8 +780,24 @@ def run_questions(
         for question in pending:
             record = _base_record(run_id, mode, question, preflight, origin)
             record["outcome"] = NOT_RUN_INTERRUPTED
+            record["execution_outcome"] = execution_outcome(record).value
             sink.write(record)
     return state
+
+
+def _carry_source_failure(record: dict[str, Any], source: Mapping[str, Any]) -> None:
+    """A recorded failure stays a failure in replay, with its original diagnostics.
+
+    Nothing is regenerated: the error category, typed failure block, request hashes and
+    the evidence provenance captured during the original execution are copied from the
+    digest-checked source record. The replay itself attempted no request and observed no
+    usage (the original usage stays in ``replay_of``).
+    """
+    record["error_category"] = source.get("error_category")
+    record["failure"] = source.get("failure")
+    record["request"] = source.get("request")
+    record["selected_evidence"] = list(source.get("selected_evidence") or [])
+    record["selected_evidence_source"] = source.get("selected_evidence_source")
 
 
 def _replay_origin(source: Mapping[str, Any] | None) -> dict[str, Any] | None:
@@ -728,6 +809,8 @@ def _replay_origin(source: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "run_id": source.get("run_id"),
         "mode": source.get("mode"),
         "record_schema_version": version,
+        "protocol_version": record_protocol(source),
+        "execution_outcome": source.get("execution_outcome"),  # schema 3 only
         "outcome": source.get("outcome"),
         "error_category": source.get("error_category"),
         "provider_attempted": source.get("provider_attempted"),
@@ -807,8 +890,16 @@ def _has_usage(record: Mapping[str, Any]) -> bool:
 
 
 def failure_diagnostics(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Failed questions by stage and invariant code; codes and IDs only."""
-    failed = [r for r in records if r["outcome"] == FAILED]
+    """Failed questions by stage and invariant code; codes and IDs only.
+
+    A replay counts the failures it carried from its source run (``not_replayable``).
+    """
+    failed = [
+        r
+        for r in records
+        if r["outcome"] == FAILED
+        or (r["outcome"] == NOT_REPLAYABLE and (r.get("replay_of") or {}).get("outcome") == FAILED)
+    ]
     stages: dict[str, int] = {}
     codes: dict[str, int] = {}
     for r in failed:
@@ -830,7 +921,9 @@ def failure_diagnostics(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
                 "error_category": r["error_category"],
                 "stage": (r.get("failure") or {}).get("stage"),
                 "problem_codes": [p["code"] for p in (r.get("failure") or {}).get("problems", [])],
-                "usage_recorded": _has_usage(r),
+                # In a replay the original run's usage lives in replay_of; none is new.
+                "usage_recorded": _has_usage(r) or _has_usage(r.get("replay_of") or {}),
+                "carried_from_source_run": r["outcome"] == NOT_REPLAYABLE,
             }
             for r in sorted(failed, key=lambda r: r["question_id"])
         ],
@@ -895,7 +988,15 @@ def category_metrics(
     cited_complete: list[int] = []
     overlap_num = overlap_den = 0
     attempted_ids = {r["question_id"] for r in attempted}
-    for r in answerable:
+    # Retrieval is observed before generation: a model-output failure whose sent request
+    # was recorded still has its selected evidence. Missing observations are excluded.
+    retrieval_rows = [
+        r
+        for r in records
+        if r["answerable"]
+        and (r["outcome"] == COMPLETED or r.get("selected_evidence_source") is not None)
+    ]
+    for r in retrieval_rows:
         gold = gold_evidence(questions[r["question_id"]])
         if gold is None:  # pragma: no cover - answerable questions always have gold
             continue
@@ -949,7 +1050,7 @@ def category_metrics(
         for r in provider_called
         if r.get("local_token_estimate")
     ]
-    return {
+    out: dict[str, Any] = {
         "questions": len(records),
         "execution_outcomes": outcomes,
         "error_categories": dict(sorted(errors.items())),
@@ -977,15 +1078,11 @@ def category_metrics(
             "completed unanswerable questions",
             counts_only,
         ),
-        "selected_evidence_page_recall": _flag(
-            selected_recall, "completed answerable questions", counts_only
-        ),
-        "selected_evidence_fact_coverage": _mean(
-            selected_cov, "completed answerable questions", counts_only
-        ),
+        "selected_evidence_page_recall": _flag(selected_recall, RETRIEVAL_POPULATION, counts_only),
+        "selected_evidence_fact_coverage": _mean(selected_cov, RETRIEVAL_POPULATION, counts_only),
         "selected_evidence_complete_fact_coverage": _flag(
             selected_complete,
-            "completed answerable questions with >= 2 required facts",
+            RETRIEVAL_POPULATION + " and >= 2 required facts",
             counts_only,
         ),
         "cited_evidence_page_recall": _flag(
@@ -1041,6 +1138,63 @@ def category_metrics(
             "total": sum(estimates) if estimates else None,
         },
     }
+    _attach_exclusions(out, records, retrieval_rows)
+    out["reliability"] = reliability_metrics(records)
+    return out
+
+
+RETRIEVAL_POPULATION: Final = "answerable questions with recorded selected evidence"
+ANSWERABLE_CONDITIONAL: Final = (
+    "answer_attempt_rate",
+    "abstention_on_answerable_rate",
+    "cited_evidence_page_recall",
+    "cited_evidence_fact_coverage",
+    "cited_evidence_complete_fact_coverage",
+    "accepted_page_citation_overlap",
+)
+UNANSWERABLE_CONDITIONAL: Final = (
+    "abstention_on_unanswerable_rate",
+    "answered_on_unanswerable_rate",
+    "partially_answered_on_unanswerable_rate",
+)
+RETRIEVAL_METRICS: Final = (
+    "selected_evidence_page_recall",
+    "selected_evidence_fact_coverage",
+    "selected_evidence_complete_fact_coverage",
+)
+
+
+def _attach_exclusions(
+    out: dict[str, Any],
+    records: Sequence[Mapping[str, Any]],
+    retrieval_rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Every answer-dependent metric states which scheduled questions it leaves out."""
+    answerable = exclusions([r for r in records if r["answerable"]])
+    unanswerable = exclusions([r for r in records if not r["answerable"]])
+    every = exclusions(records)
+    for name in ANSWERABLE_CONDITIONAL:
+        out[name]["excluded_scheduled"] = answerable
+    for name in UNANSWERABLE_CONDITIONAL:
+        out[name]["excluded_scheduled"] = unanswerable
+    observed = {r["question_id"] for r in retrieval_rows}
+    missing = [r for r in records if r["answerable"] and r["question_id"] not in observed]
+    for name in RETRIEVAL_METRICS:
+        out[name]["excluded_scheduled"] = {
+            "scheduled": sum(1 for r in records if r["answerable"]),
+            "with_recorded_selected_evidence": len(retrieval_rows),
+            "excluded_by_outcome": dict(
+                sorted(
+                    {
+                        o: sum(1 for r in missing if execution_outcome(r).value == o)
+                        for o in {execution_outcome(r).value for r in missing}
+                    }.items()
+                )
+            ),
+        }
+    out["status_distribution"]["excluded_scheduled"] = every
+    out["guardrails"]["excluded_scheduled"] = every
+    out["citation_structural_invariants"]["excluded_scheduled"] = every
 
 
 def _latency(records: Sequence[Mapping[str, Any]], key: str) -> dict[str, Any]:
@@ -1107,18 +1261,19 @@ def aggregate(
     """Deterministic from the records and split metadata; ``operational`` is added later."""
     questions = {q.question_id: q for q in split.questions}
     ids = [r["question_id"] for r in records]
-    problems: list[str] = []
+    structural: list[str] = []
     if sorted(ids) != sorted(questions) or len(set(ids)) != len(ids):
-        problems.append("records do not cover each development question exactly once")
-    not_completed = [r for r in records if r["outcome"] != COMPLETED]
-    if not_completed:
-        problems.append(f"{len(not_completed)} question(s) not completed")
-    if any(r["guardrails"]["status"] == "failed" for r in records):
-        problems.append("guardrail diagnostics failed for at least one question")
+        structural.append("records do not cover each development question exactly once")
+    if len({_canonical(r.get("identities")) for r in records}) > 1:
+        structural.append("records do not share one set of frozen identities")
+    protocols = {record_protocol(r) for r in records}
+    if len(protocols) != 1:
+        structural.append("records do not share one protocol version")
+    protocol = next(iter(protocols)) if len(protocols) == 1 else None
     if state.interrupted:
-        problems.append("the run was interrupted")
+        structural.append("the run was interrupted")
     if state.aborted:
-        problems.append(f"the run was aborted after a {state.systemic_category} failure")
+        structural.append(f"the run was aborted after a {state.systemic_category} failure")
     dataset_counts = {c.value: sum(1 for q in split.questions if q.category is c) for c in Category}
     by_category = {
         c.value: category_metrics(
@@ -1130,23 +1285,42 @@ def aggregate(
     }
     identities = records[0]["identities"] if records else {}
     origins = {(r.get("origin_mode"), r.get("origin_run_id")) for r in records}
-    if len(origins) != 1:
-        problems.append("records do not share one origin run")
     origin_mode, origin_run_id = next(iter(origins)) if len(origins) == 1 else (None, None)
+    if len(origins) != 1:
+        structural.append("records do not share one origin run")
+    completion: CompletionState | None = None
+    if protocol == PROTOCOL_V13:
+        completion, problems = completion_state(records, structural)
+        run_complete = completion is CompletionState.ANSWER_COMPLETE
+    else:  # protocol 1.2 runs keep their original, binary completion semantics
+        problems = list(structural)
+        not_completed = [r for r in records if r["outcome"] != COMPLETED]
+        if not_completed:
+            problems.append(f"{len(not_completed)} question(s) not completed")
+        if any(r["guardrails"]["status"] == "failed" for r in records):
+            problems.append("guardrail diagnostics failed for at least one question")
+        run_complete = not problems
     notes = [SYNTHETIC_NOTE] if origin_mode != "live" else []
     if mode == "replay":
         notes.append(REPLAY_NOTE)
     report: dict[str, Any] = {
         "report_type": REPORT_TYPE,
         "evaluation_kind": EVALUATION_KIND,
-        "protocol_version": PROTOCOL_VERSION,
+        "protocol_version": protocol,
+        "harness_protocol_version": PROTOCOL_VERSION,
         "caveat": CAVEAT,
         "mode": mode,
         "origin_mode": origin_mode,
         "origin_run_id": origin_run_id,
         "synthetic": origin_mode != "live",
         "provenance_notes": notes,
-        "reportability": _reportability(origin_mode, problems),
+        "completion_state": None if completion is None else completion.value,
+        "completion_semantics": "protocol 1.3 states"
+        if completion is not None
+        else "protocol 1.2: complete or incomplete only (never upgraded)",
+        "reportability": _reportability(origin_mode, protocol, completion, problems),
+        "selection_rule": SELECTION_RULE if protocol == PROTOCOL_V13 else None,
+        "failure_classification": classification_table(),
         "run_id": run_id,
         "replay_of": replay_of,
         "split": DEV_SPLIT,
@@ -1164,7 +1338,7 @@ def aggregate(
             "attempted_requests": attempted_requests,
             "counts": "attempted provider requests, including failed attempts",
         },
-        "run_complete": not problems,
+        "run_complete": run_complete,
         "completion_problems": problems,
         "overall": category_metrics(records, questions, counts_only=False),
         "by_category": by_category,
@@ -1199,18 +1373,37 @@ def aggregate(
     return report
 
 
-def _reportability(origin_mode: object, problems: Sequence[str]) -> dict[str, Any]:
-    """Decided by the origin run's provenance, never by the current execution mode."""
+def _reportability(
+    origin_mode: object,
+    protocol: str | None,
+    completion: CompletionState | None,
+    problems: Sequence[str],
+) -> dict[str, Any]:
+    """Decided by the origin run's provenance and protocol, never by the execution mode."""
+    reportable = False
     if origin_mode != "live":
         reason = "synthetic origin: never evidence of hosted-model performance"
-    elif problems:
+    elif protocol == PROTOCOL_V12:
+        reportable = not problems
+        reason = (
+            "complete live-origin run: reportable as a Stage 5 diagnostic (protocol §13)"
+            if reportable
+            else "incomplete run: not a completed 24-question diagnostic result"
+        )
+    elif protocol == PROTOCOL_V13 and completion is CompletionState.ANSWER_COMPLETE:
+        reportable = True
+        reason = "answer-complete live-origin run: reportable (protocol §14)"
+    elif protocol == PROTOCOL_V13 and completion is CompletionState.EXECUTION_COMPLETE:
+        reportable = True
+        reason = (
+            "execution-complete live-origin run: reportable with model-output failures "
+            "counted (protocol §14)"
+        )
+    elif protocol == PROTOCOL_V13:
         reason = "incomplete run: not a completed 24-question diagnostic result"
     else:
-        reason = "complete live-origin run: reportable as a Stage 5 diagnostic (protocol §13)"
-    return {
-        "reportable_as_hosted_model_diagnostic": origin_mode == "live" and not problems,
-        "reason": reason,
-    }
+        reason = "unknown or mixed protocol: not reportable"
+    return {"reportable_as_hosted_model_diagnostic": reportable, "reason": reason}
 
 
 def operational(records: Sequence[Mapping[str, Any]], started_at: str) -> dict[str, Any]:
@@ -1281,8 +1474,20 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     lines += ["", f"Origin: `{report['origin_mode']}` run `{report['origin_run_id']}`."]
     lines += [f"> **{note}**" for note in report["provenance_notes"]]
     lines += ["", f"Reportability: {report['reportability']['reason']}."]
-    if not report["run_complete"]:
+    state = report.get("completion_state")
+    lines += ["", f"Completion state: `{state}` ({report['completion_semantics']})."]
+    if state == CompletionState.INCOMPLETE.value or (state is None and not report["run_complete"]):
         lines += ["", "> **INCOMPLETE RUN: not a completed 24-question diagnostic result.**"]
+    reliability = report["overall"]["reliability"]
+    lines += [
+        "",
+        "Scheduled-question outcomes (unconditional): "
+        + ", ".join(
+            f"{k} {v}" for k, v in reliability["unconditional_outcome_distribution"].items()
+        ),
+        f"Contract-valid outcome rate: {_fmt_rate(reliability['contract_valid_outcome_rate'])}; "
+        f"model-output failure rate: {_fmt_rate(reliability['model_output_failure_rate'])}.",
+    ]
     lines += [
         "",
         f"Run complete: **{report['run_complete']}**"
@@ -1443,8 +1648,14 @@ def execute(
     replay_records: Sequence[Mapping[str, Any]] | None = None,
     price: Price | None = None,
     now: datetime | None = None,
+    git: Mapping[str, Any] | None = None,
 ) -> RunOutputs:
-    """Verify identities, then (and only then) build the provider and run every question."""
+    """Verify identities, preregister a live run, then build the provider and run.
+
+    A live run is logged in the append-only run log before any provider exists, and
+    its completion state is logged when it finishes (an unfinished entry means the
+    process ended early).
+    """
     preflight = pipeline.identities()
     verify_identities(preflight, expected_identities)
     expected = None
@@ -1456,7 +1667,11 @@ def execute(
         expected = check_replay_records(replay_records, preflight, split)
         first = replay_records[0]
         replay_of = str(first["run_id"])
-        origin = Origin("live" if first["mode"] == "live" else "dry_run", replay_of)
+        origin = Origin(
+            "live" if first["mode"] == "live" else "dry_run",
+            replay_of,
+            protocol_version=record_protocol(first),
+        )
     run_id = new_run_id(mode, preflight, now)
     started_at = (now or datetime.now(UTC)).isoformat()
     directory = reports_dir / REPORT_SUBDIR
@@ -1474,16 +1689,46 @@ def execute(
         def attempts() -> int:
             return 0  # replay never sends a provider request
 
+        def sent() -> GenerationRequest | None:
+            return None
+
     else:
+        run_log = directory / RUN_LOG_FILENAME
+        git_state = dict(git) if git is not None else _git_state()
+        if mode == "live":
+            append_run_log(
+                run_log,
+                {
+                    "event": "preregistered",
+                    "run_id": run_id,
+                    "started_at_utc": started_at,
+                    "git": git_state,
+                    "protocol_version": PROTOCOL_VERSION,
+                    "dataset": {
+                        "dataset_version": split.dataset_version,
+                        "dataset_sha256": split.dataset_sha256,
+                        "split_sha256": split.split_sha256,
+                        "question_count": len(split.questions),
+                    },
+                    "identities": preflight,
+                    "max_requests": max_requests,
+                    "hard_ceiling": HARD_REQUEST_CEILING,
+                    "selection_rule": SELECTION_RULE,
+                },
+            )
         active = BudgetedProvider(provider_factory(), max_requests or HARD_REQUEST_CEILING)
         budget = active
         service = pipeline.service(active)
 
         def answer(question: EvalQuestion) -> GenerationRunResult:
+            active.last_request = None
             return service.answer(question.question)
 
         def attempts() -> int:
             return active.attempts
+
+        def sent() -> GenerationRequest | None:
+            return active.last_request
 
     try:
         with records_path.open("x", encoding="utf-8", newline="\n") as handle:
@@ -1499,6 +1744,7 @@ def execute(
                 attempts=attempts,
                 expected=expected,
                 origin=origin,
+                sent_request=sent,
             )
     finally:
         if budget is not None:
@@ -1521,6 +1767,24 @@ def execute(
         handle.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
     with markdown_path.open("x", encoding="utf-8") as handle:
         handle.write(render_markdown(report))
+    if mode == "live":
+        reliability = report["overall"]["reliability"]
+        append_run_log(
+            directory / RUN_LOG_FILENAME,
+            {
+                "event": "finished",
+                "run_id": run_id,
+                "finished_at_utc": datetime.now(UTC).isoformat(),
+                "protocol_version": report["protocol_version"],
+                "completion_state": report["completion_state"],
+                "reportable": report["reportability"]["reportable_as_hosted_model_diagnostic"],
+                "outcomes": reliability["unconditional_outcome_distribution"],
+                "failure_counts": reliability["failure_counts"],
+                "attempted_requests": report["request_budget"]["attempted_requests"],
+                "interrupted": state.interrupted,
+                "aborted": state.aborted,
+            },
+        )
     return RunOutputs(report, records_path, json_path, markdown_path, state.interrupted)
 
 
@@ -1607,6 +1871,7 @@ def main(argv: Sequence[str] | None = None, *, environ: Mapping[str, str] | None
             expected_identities=EXPECTED_IDENTITIES,
             replay_records=replay,
             price=price,
+            git=_git_state(settings.project_root),
         )
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
