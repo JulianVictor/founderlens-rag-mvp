@@ -228,7 +228,11 @@ documents; abstention when evidence is insufficient; guardrails against
 answering outside the corpus.
 
 **Acceptance criteria.** Cross-document and unanswerable question categories
-are evaluated separately with reported (not invented) results.
+are evaluated separately with reported (not invented) results. Under
+protocol v1.2 §13 these are deterministic diagnostic results
+(`diagnostic_deterministic`) from an authorized real run; formal answer
+quality stays in Stage 6. Stage 5 remains in progress until such results
+are obtained and reported.
 
 Commits:
 - Commit 6.1: corpus vocabulary (manifest plus a reviewed alias table),
@@ -247,10 +251,14 @@ Commits:
   ([architecture.md](architecture.md#response-guardrails-stage-5-commit-62)).
   *(implemented; offline; any enforcement must be decided from 6.3 and
   versioned)*
-- Commit 6.3: development-split category evaluation (deterministic metrics,
-  paid run on authorization). *(next milestone; needs a separate
-  evaluation-protocol review and explicit authorization for any paid
-  execution)*
+- Commit 6.3: development-split diagnostic evaluation harness
+  (`founderlens.evaluation.generation_eval`) and protocol v1.2 §13:
+  deterministic status, abstention-flag, selected and cited evidence
+  coverage, accepted-page overlap, guardrail, usage and failure
+  diagnostics with explicit denominators; offline dry run and replay;
+  hard-capped, explicitly authorized live mode.
+  *(implemented; offline-verified; the paid run needs separate explicit
+  authorization and has not been executed)*
 - Commit 6.4: one evidence-driven change, only if 6.3 justifies it.
   *(conditional)*
 

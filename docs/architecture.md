@@ -13,12 +13,15 @@
 > locally and verified offline; hosted-model behaviour has not been
 > verified beyond one owner-reported manual live demo. Stage 5 (in progress):
 > Commit 6.1 adds diagnostic corpus scope and evidence coverage analysis;
-> Commit 6.2 adds deterministic, diagnostic-only response guardrails.
+> Commit 6.2 adds deterministic, diagnostic-only response guardrails;
+> Commit 6.3 adds the development-split diagnostic evaluation harness
+> (offline-verified; no paid run yet).
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
 > - `founderlens.evaluation` (dataset schema and validation, page-level
->   retrieval metrics, the development-split retrieval benchmark);
+>   retrieval metrics, the development-split retrieval benchmark, the
+>   diagnostic generation evaluation harness);
 > - `founderlens.ingestion` (raw page-level extraction, normalization, table
 >   candidates, page-aware chunking);
 > - `founderlens.retrieval` (lexical tokenizer, in-memory BM25 baseline,
@@ -1797,13 +1800,81 @@ contract identities are unchanged.
 No false positives appeared in these seven scripted scenarios. That is a
 smoke test, not a precision measurement.
 
-**How 6.3 uses it.** The development-split evaluation (not implemented)
-can run `check_response` on each response and aggregate the findings by
-category, severity and question category. It can then compare them with
-labels: for example, whether attribution warnings concentrate on
-cross-document questions, and how often numeric notices coincide with
-wrong values. Any enforcement must be decided from those results and
-versioned as a new policy.
+**How 6.3 uses it.** The diagnostic evaluation (Commit 6.3) runs
+`check_response` once on each generated response and aggregates the
+findings by category, severity and question category, next to the
+gold-page coverage of the same response. Any enforcement must be decided
+from real results and versioned as a new policy.
+
+## Diagnostic generation evaluation (Stage 5, Commit 6.3)
+
+`founderlens.evaluation.generation_eval` implements protocol v1.2 §13: a
+development-split, deterministic **diagnostic** report
+(`evaluation_kind: diagnostic_deterministic`). It measures the frozen
+baseline and its guardrail findings. It is not answer-quality evaluation:
+correctness, faithfulness, claim support and abstention appropriateness stay
+in Stage 6.
+
+**Flow.**
+1. Load the development split with the hash-checked loader (the held-out
+   file is never opened).
+2. Load the frozen pipeline and compare every identity with
+   `EXPECTED_IDENTITIES`. A mismatch aborts before any provider exists.
+3. For a live run, check every authorization before anything is loaded.
+4. Per question: the service answers once, the resolver resolves once, and
+   `check_response` checks that same response. A guardrail error keeps the
+   response.
+5. Each record is sealed (SHA-256 of its canonical JSON), appended and
+   flushed immediately.
+6. The aggregate is computed only from the stored records, so it is
+   reproducible from them.
+
+| Component | Role |
+|---|---|
+| `Pipeline` | The frozen retriever, tokenizer, resolver, vocabulary and configurations; builds the service. |
+| `BudgetedProvider` | Counts attempted requests, failed ones included, and refuses before sending once the cap is reached. |
+| `ReplayProvider` | Returns one stored answer, only for the identical rebuilt request. |
+| `evaluate_question` / `run_questions` | One generation, resolution and check per question; failure taxonomy; interruption handling. |
+| `category_metrics` / `aggregate` | Deterministic metrics with populations, numerators and denominators. |
+
+**Modes.**
+
+| Mode | Provider | Notes |
+|---|---|---|
+| `dry_run` (default) | SYNTHETIC scripted placeholder | Offline. Exercises the full pipeline; metrics describe the script, not a model. |
+| `live` | pinned OpenAI snapshot, SDK retries 0 | Paid. Needs `--live`, `FOUNDERLENS_RUN_PAID_EVAL=1`, `--max-requests N` (1–24, no default), a clean tree and credentials. |
+| `replay` | stored answers | Offline. Rebuilds requests, verifies hashes, identities, provenance and citations, recomputes guardrails. Keeps the source run's origin; adds no usage or latency observations. |
+
+**Provenance and reportability.** Records and reports carry the execution
+mode and the origin (mode and run ID of the run that produced the answers).
+`synthetic` and `reportability` follow the origin: only a complete
+live-origin run, or its replay, is reportable as a hosted-model diagnostic.
+Synthetic dry runs and their replays never are, and an incomplete run is
+marked `INCOMPLETE` and is never reportable. Record digests detect
+accidental modification, not deliberate forgery.
+
+**Verified denominators** (independent recomputation with the §3 functions
+and the frozen BM25 V2 benchmark at k = 10, on the dry run below): every
+question had 10 selected chunks; selected page recall counts the 19
+answerable questions with any accepted page selected (19/19), and complete
+coverage counts the 14 answerable questions with ≥ 2 required facts whose
+every fact has an accepted selected page (12/14). Both equal the frozen
+benchmark's Recall@10 and complete coverage@10 and do not depend on the
+provider. `accepted_page_citation_overlap` is a reference-alignment
+diagnostic, not semantic citation precision or claim support.
+
+**Outputs** (git-ignored `reports/generation_eval/`, one run ID per run,
+never overwritten): `<run_id>.records.jsonl` (private: answers and citation
+associations, never question text), `<run_id>.json` and `<run_id>.md` (codes,
+IDs and numbers only). The JSON records the Git commit and dirty state,
+dataset hashes, mode, SDK version, model snapshot, timestamp and every frozen
+identity.
+
+**Offline dry run** (`python -m founderlens.evaluation.generation_eval`, real
+corpus, SYNTHETIC answers): 24 of 24 questions completed, 24 provider
+attempts (no local abstention), 0 citation invariant violations, run complete;
+the replay of that run completed 24 of 24 with 0 provider attempts. These are
+pipeline checks, not measurements of model behaviour.
 
 ## Generation interfaces (Stage 4, implemented)
 
@@ -1866,7 +1937,7 @@ pass.
 |------------------|----------------|------------|
 | `config` *(implemented)* | Project root and path resolution | stdlib |
 | `corpus` *(implemented)* | Manifest, verified acquisition, integrity validation | config, stdlib `urllib`, PyMuPDF (validity and page counts) |
-| `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
+| `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); Stage 5 diagnostic generation evaluation (`generation_eval`, protocol v1.2 §13); formal answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2), frozen retrieval policy and generation-facing BM25 V2 entry point (Commit 4.3; no model needed) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch (dense and embeddings only) |
 | `guardrails` *(scope diagnostics, Commit 6.1)* | Corpus vocabulary from the manifest, explicit company and period recognition, manifest / selected / cited coverage; per-claim company, period and numeric checks and question coverage findings (Commit 6.2); all diagnostic only | corpus manifest, generation evidence records |

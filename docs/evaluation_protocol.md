@@ -1,11 +1,13 @@
 # Evaluation Protocol
 
-> **Status: protocol v1.1.** It defines *how* the system will be evaluated.
-> **No experiment has been run and no results exist.** The question set
+> **Status: protocol v1.2.** It defines *how* the system will be evaluated.
+> No generation evaluation has been run; development-split retrieval results
+> are in [`retrieval_evaluation.md`](retrieval_evaluation.md). The question set
 > (dataset v1.0.0) has been **reviewed by the project owner**, who accepted all
 > 40 annotations without corrections, and is **frozen** (see
 > [`evaluation/README.md`](../evaluation/README.md)). v1.1 states the retrieval
-> metric definitions exactly (§3) and adds the benchmark freeze (§10). The
+> metric definitions exactly (§3) and adds the benchmark freeze (§10). v1.2
+> adds a narrowly scoped Stage 5 diagnostic amendment (§13). The formal
 > evaluation harness, including the LLM judge, is implemented in Stage 6.
 
 ## 1. Inputs
@@ -373,4 +375,140 @@ generation prompts, or judge prompts and calibration.
 
 A single command (Stage 6) will produce a versioned report in `reports/` with
 every metric above, per category and per split, plus the configuration record
-in §7. Only numbers from such runs may be quoted in documentation.
+in §7. Only numbers from such runs may be quoted in documentation, with one
+exception: approved Stage 5 deterministic diagnostics (§13).
+
+## 13. Stage 5 diagnostic amendment (v1.2)
+
+**Why.** Stage 5 must report cross-document and unanswerable category results.
+Before v1.2, §4 reserved generation metrics for Stage 6, several §4 metrics
+need the judge (§6), judge scores need human calibration first (§8), and §12
+allowed only Stage 6 numbers to be quoted. v1.2 adds one narrow exception: a
+deterministic **diagnostic** report. Nothing in §1–§12 is weakened.
+
+**Unchanged.** Questions, labels, required facts, accepted evidence, the
+dataset version, the category distribution, every §3–§8 definition, the judge
+design, the κ ≥ 0.6 calibration target, the isolation rules (§9) and the
+held-out freeze (§10).
+
+**Classification and caveat.** Every report carries
+`evaluation_kind: diagnostic_deterministic` and this caveat, verbatim:
+
+> These diagnostics do not establish answer correctness, faithfulness,
+> claim-level citation support or semantic abstention appropriateness. Formal
+> evaluation remains pending Stage 6.
+
+**Scope.**
+- Development split only (24 questions), through the hash-checked
+  development loader. The held-out file is never opened.
+- The pipeline receives the question text only. Required facts and accepted
+  evidence are used only in scoring. Reference answers and expected abstention
+  reasons are not read.
+- One frozen generation per question, one citation resolution and one
+  deterministic guardrail check of that same response. No judge, no repair, no
+  fallback, no rewriting.
+
+**Metrics.** Every metric reports its eligible population, numerator and
+denominator, overall and per category. A zero denominator is reported as
+`not_applicable`, never as zero.
+
+| Metric | Per-question definition | Eligible population |
+|---|---|---|
+| Execution outcome | `completed`, `failed` (error category), `not_run_budget`, `not_run_aborted`, `not_run_interrupted`, `not_replayable` | all questions |
+| Status distribution | answered, partially_answered, insufficient_evidence, local_abstention | completed questions |
+| `answer_attempt_rate` | answered or partially_answered | completed answerable |
+| `abstention_on_answerable_rate` | insufficient_evidence or local abstention | completed answerable |
+| `abstention_on_unanswerable_rate` | insufficient_evidence or local abstention | completed unanswerable |
+| `answered_on_unanswerable_rate` | answered | completed unanswerable |
+| `partially_answered_on_unanswerable_rate` | partially_answered, never folded into either of the above | completed unanswerable |
+| `selected_evidence_page_recall` | §3 Recall over the distinct pages of the model-visible evidence | completed answerable |
+| `selected_evidence_fact_coverage` | §3 required-fact coverage over those pages | completed answerable |
+| `selected_evidence_complete_fact_coverage` | every required fact has an accepted selected page | completed answerable with ≥ 2 facts |
+| `cited_evidence_page_recall`, `cited_evidence_fact_coverage`, `cited_evidence_complete_fact_coverage` | the same over the distinct pages of the cited evidence | completed answerable with an answer attempt (and ≥ 2 facts for complete) |
+| `accepted_page_citation_overlap` | distinct cited (document, page) pairs that are accepted pages | distinct cited pages in answerable answer attempts (micro) |
+| Citation structural invariants | each citation's chunk, document and page equal its selected evidence | all citations |
+| Guardrail findings | counts by finding category × severity, numeric trace counts, questions with ≥ 1 warning | completed questions with completed checks |
+| Provider usage | provider-reported tokens; `None` stays not reported | completed questions answered by the provider |
+| Local token estimates | local tokenizer count of instructions + input, labelled as an estimate | same |
+| Latency | context, provider and total ms, p50 and p95 (operational section) | completed questions |
+
+- Pages are deduplicated per question at the (document, page) level before
+  any page metric, so several chunks or citations on one page count once.
+  Citation counts are reported separately and never stand in for page
+  coverage.
+- Abstention metrics are **operational flags**. An abstention on a question
+  labelled unanswerable is not called correct: whether the stated reason is
+  appropriate is §6.6, a judge dimension.
+- `accepted_page_citation_overlap` is a **reference-alignment diagnostic**:
+  how far the cited pages coincide with the annotated accepted pages. It is
+  not semantic citation precision, claim-level support, verified
+  faithfulness or a bound on factual correctness. A cited accepted page
+  does not establish that the passage supports the claim, and a
+  non-accepted page may also support it, because accepted evidence is not
+  exhaustive.
+- Alternative accepted pages for one fact are alternatives, exactly as in
+  §3: any one of them covers the fact.
+- Not implemented here, and still Stage 6: reference fact correctness,
+  numerical correctness, groundedness, citation support, completeness,
+  relevance and judge-checked abstention appropriateness.
+
+**Small samples.** Overall and per-category rates use the §3 percentile
+bootstrap (10,000 resamples, fixed seed) with a small-sample warning below 10
+questions. Categories with fewer than 5 dataset questions (temporal, n = 2)
+report counts only.
+
+**Failures.** Authentication, permission, quota, model-availability and
+configuration failures abort a live run; later questions are
+`not_run_aborted`. Transport, timeout, rate-limit and server errors are
+failures, with no retry. Refusals, incomplete generations and invalid
+structured output are failures, never abstentions. Citation-resolution
+failures are failures. A guardrail failure keeps the generated response and
+marks only the diagnostics as failed. Local abstentions are completed
+outcomes. Failed and unrun questions are excluded from rate denominators but
+always counted, per category. Raw provider messages are never recorded.
+
+**Run completion.** A run is complete only if every development question is
+`completed` exactly once, every guardrail check completed, and the run was
+neither aborted nor interrupted. Runs are never merged. An incomplete run is
+never presented as a 24-question result.
+
+**Provenance.** Every record and report carries its execution mode
+(`dry_run`, `live`, `replay`) and its **origin**: the mode and run ID of
+the run that produced the answers. A replay keeps its source run's origin,
+so a replay of a dry run is still synthetic and a replay of a live run keeps
+the live run ID. Replays add no provider-usage or latency observations.
+
+**Exception to §12.** Only a **complete** run whose origin is `live` (the
+live run itself, or a replay of it) may be quoted in documentation, as a
+Stage 5 diagnostic of the hosted model: labelled `diagnostic_deterministic`,
+with denominators, the origin run ID and the command. Reportability follows
+the origin, never the current execution mode. Dry runs and replays of dry
+runs come from a synthetic placeholder provider and are never evidence of
+model performance. An incomplete run is never reportable.
+
+**Paid execution.** Never automatic. A live run needs `--live`,
+`FOUNDERLENS_RUN_PAID_EVAL=1`, an explicit `--max-requests N` (1–24, no
+default), a clean Git working tree, the frozen identities and locally
+configured credentials. The budget counts attempted requests, including
+failed ones, and is enforced before sending. SDK retries are disabled; the
+semantic model configuration is unchanged. Cost is estimated only from a
+price and effective date the user supplies.
+
+**Replay.** A replay rebuilds each request through the frozen pipeline,
+requires the exact stored request and instruction hashes and identities,
+revalidates the stored answer through the unchanged service and resolver,
+requires identical citation associations and recomputes the guardrails. It
+rejects modified, mixed-run, duplicate, provenance-inconsistent or
+incompatible records. Each record's SHA-256 digest detects accidental
+modification or truncation; it is not a signature and does not prevent
+deliberate forgery. Replay reproduces neither model sampling nor provider
+latency, and reports the original run's usage separately.
+
+**Privacy.** The aggregate JSON and Markdown hold IDs, codes and numbers only.
+The per-question records hold validated answers and citation associations
+(never question text) for replay, human review and Stage 6 judging. All three
+are git-ignored private evaluation artifacts.
+
+**Tuning.** Development results produced after any change motivated by them
+(for example Commit 6.4) are labelled post-tuning. Stage 6 human calibration
+(§8) is still required before any judge score is reported.

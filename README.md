@@ -29,13 +29,14 @@ reproducible evaluation.
 >   providers. The project owner reports one successful manual live demo
 >   (one request); that is a functional smoke test, not a benchmark.
 > - Stage 5 is in progress: diagnostic corpus scope and evidence coverage
->   analysis (Commit 6.1) and diagnostic response guardrails (Commit 6.2),
->   with no behaviour change.
+>   analysis (Commit 6.1), diagnostic response guardrails (Commit 6.2) and
+>   a development-split diagnostic evaluation harness (Commit 6.3,
+>   offline-verified; no paid run yet), with no behaviour change.
 >
 > Retrieval quality is measured for BM25, dense and hybrid on the 19
 > answerable development questions only; the held-out split has not been
-> used. Answer evaluation, response guardrail enforcement, the demo UI and
-> deployment are **not implemented yet**. See
+> used. Formal answer evaluation, response guardrail enforcement, the demo UI
+> and deployment are **not implemented yet**. See
 > [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
@@ -198,6 +199,9 @@ python -m founderlens.guardrails.scope --smoke
 # Stage 5 response guardrails (SYNTHETIC answers over the real corpus, no LLM call)
 python -m pytest tests/test_guardrails_response_checks.py -q
 python -m founderlens.guardrails.response_checks --smoke
+# Stage 5 diagnostic evaluation: offline dry run (SYNTHETIC answers) and replay
+python -m founderlens.evaluation.generation_eval
+python -m founderlens.evaluation.generation_eval --replay reports/generation_eval/<run_id>.records.jsonl
 $env:FOUNDERLENS_REAL_TOKENIZER = "1"; $env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_generation_context_real.py -q
 # Opt-in PAID live smoke test (two tiny calls, synthetic text); never run by CI
 $env:FOUNDERLENS_RUN_LIVE_LLM_TESTS = "1"; python -m pytest tests/test_generation_openai_live.py -q
@@ -638,6 +642,29 @@ and makes no paid calls; the live LLM test is skipped unless
   is not arithmetic or semantic validation.
 - Guardrail policy `3f202ebc205a`. All baseline identities are unchanged.
 
+**Implemented (Commit 6.3, Stage 5), see [docs/evaluation_protocol.md](docs/evaluation_protocol.md#13-stage-5-diagnostic-amendment-v12):**
+- `python -m founderlens.evaluation.generation_eval` runs the frozen
+  pipeline once per development question and reports
+  `diagnostic_deterministic` metrics with explicit denominators: execution
+  outcomes, answer status, abstention flags, selected and cited evidence
+  page coverage, accepted-page citation overlap, citation invariants,
+  guardrail findings, provider usage and latency.
+- These diagnostics do not establish answer correctness, faithfulness,
+  claim-level citation support or semantic abstention appropriateness.
+  Formal evaluation remains pending Stage 6.
+- Offline by default (SYNTHETIC answers, never quoted as performance), with
+  a replay mode that revalidates stored answers without any provider call.
+  A replay keeps its source run's origin: only a complete live-origin run (or
+  its replay) is reportable as a hosted-model diagnostic, and synthetic dry
+  runs and their replays never are.
+- Accepted-page citation overlap is a reference-alignment diagnostic, not
+  semantic citation support. Formal judging and human calibration remain
+  Stage 6; later development-set tuning must be labelled post-tuning.
+- A paid run is never automatic: it needs `--live`,
+  `FOUNDERLENS_RUN_PAID_EVAL=1`, an explicit `--max-requests` (at most 24),
+  a clean Git tree, the frozen identities and credentials. **No paid run
+  has been executed.**
+
 **Not implemented:** guardrail enforcement, claim-support
 verification, answer-level evaluation and the judge, the Streamlit demo,
 deployment. No formal live evaluation and no held-out results exist.
@@ -648,7 +675,7 @@ deployment. No formal live evaluation and no held-out results exist.
 2. Document Ingestion Pipeline
 3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
 4. Grounded RAG Generation — *complete locally (5.1–5.4, offline-verified; live behaviour unverified)*
-5. Cross-Document Reasoning & Guardrails — *in progress (6.1 scope diagnostics, 6.2 diagnostic response checks)*
+5. Cross-Document Reasoning & Guardrails — *in progress (6.1 scope diagnostics, 6.2 diagnostic response checks, 6.3 diagnostic evaluation harness)*
 6. RAG Evaluation & Benchmarking
 7. Streamlit Interactive Demo
 8. Testing, Deployment & Documentation
