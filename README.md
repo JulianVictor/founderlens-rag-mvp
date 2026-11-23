@@ -26,12 +26,15 @@ reproducible evaluation.
 >   a structured grounded generation service (Commit 5.3), and citation
 >   resolution into a final cited response (Commit 5.4). Stage 4 is
 >   complete locally and verified offline with synthetic, fake and mocked
->   providers only. No live LLM call has been made with retrieved evidence.
+>   providers. The project owner reports one successful manual live demo
+>   (one request); that is a functional smoke test, not a benchmark.
+> - Stage 5 has started: diagnostic corpus scope and evidence coverage
+>   analysis (Commit 6.1), with no behaviour change.
 >
 > Retrieval quality is measured for BM25, dense and hybrid on the 19
 > answerable development questions only; the held-out split has not been
-> used. Answer evaluation, cross-document guardrails (Stage 5, next), the
-> demo UI and deployment are **not implemented yet**. See
+> used. Answer evaluation, response guardrails, the demo UI and deployment
+> are **not implemented yet**. See
 > [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
@@ -188,6 +191,9 @@ python -m pytest tests/test_generation_citations.py -q  # offline citation tests
 python -m founderlens.generation.demo --show-passages
 # Opt-in PAID live demo: exactly one request, retries off (needs OPENAI_API_KEY)
 python -m founderlens.generation.demo --live --question "What revenue did NVIDIA report for its Data Center business in the fourth quarter of fiscal 2025?"
+# Stage 5 scope diagnostics (no LLM call)
+python -m pytest tests/test_guardrails_scope.py -q
+python -m founderlens.guardrails.scope --smoke
 $env:FOUNDERLENS_REAL_TOKENIZER = "1"; $env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_generation_context_real.py -q
 # Opt-in PAID live smoke test (two tiny calls, synthetic text); never run by CI
 $env:FOUNDERLENS_RUN_LIVE_LLM_TESTS = "1"; python -m pytest tests/test_generation_openai_live.py -q
@@ -581,9 +587,30 @@ and makes no paid calls; the live LLM test is skipped unless
 - The plain-text quoting is not HTML sanitization: a web frontend must
   escape display text itself.
 
-**Not implemented:** claim-support verification, answer-level evaluation
-and the judge, cross-document guardrails (Stage 5), the Streamlit demo,
-deployment. No live grounded generation and no held-out results exist.
+**Implemented (Commit 6.1, Stage 5), see [docs/architecture.md](docs/architecture.md#corpus-scope-analysis-stage-5-commit-61):**
+- `founderlens.guardrails.scope` recognizes explicit company and reporting
+  period references in a question.
+  - Its vocabulary comes from the manifest plus a reviewed alias table:
+    NVIDIA and Alphabet aliases, `GOOGL`, the Google Cloud / Google
+    Services segments and the ambiguous brand `Google`.
+  - It compares those references with manifest metadata, model-visible
+    evidence and cited evidence.
+- It is conservative: generic terms never match, fiscal quarters are never
+  assumed to be calendar quarters, and relative or ambiguous periods stay
+  unresolved.
+- A period missing from the manifest is `not_in_manifest_reporting_periods`.
+  Releases contain other periods' figures, so this is not "out of corpus".
+- Coverage has two levels. Reference status covers only the assessable
+  recognized references. Question status becomes `unknown` when anything
+  is unresolved, unassessable (segments, periods not in the manifest),
+  basis-unspecified, or a fiscal label with no named company. Neither is
+  answerability.
+- Diagnostic only: no abstention, blocking or behaviour change. Vocabulary
+  `50057f9259f6`, analyzer `b447ce1aee09`.
+
+**Not implemented:** response guardrails (6.2), claim-support
+verification, answer-level evaluation and the judge, the Streamlit demo,
+deployment. No formal live evaluation and no held-out results exist.
 
 ## Roadmap
 
@@ -591,7 +618,7 @@ deployment. No live grounded generation and no held-out results exist.
 2. Document Ingestion Pipeline
 3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
 4. Grounded RAG Generation — *complete locally (5.1–5.4, offline-verified; live behaviour unverified)*
-5. Cross-Document Reasoning & Guardrails — *next*
+5. Cross-Document Reasoning & Guardrails — *in progress (6.1 scope diagnostics)*
 6. RAG Evaluation & Benchmarking
 7. Streamlit Interactive Demo
 8. Testing, Deployment & Documentation

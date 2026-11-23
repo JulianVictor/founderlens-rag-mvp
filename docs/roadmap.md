@@ -9,7 +9,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
 | 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
-| 5 | Cross-Document Reasoning & Guardrails | Next milestone (planned) |
+| 5 | Cross-Document Reasoning & Guardrails | In progress (Commit 6.1 scope diagnostics implemented) |
 | 6 | RAG Evaluation & Benchmarking | Planned |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
@@ -229,6 +229,23 @@ answering outside the corpus.
 
 **Acceptance criteria.** Cross-document and unanswerable question categories
 are evaluated separately with reported (not invented) results.
+
+Commits:
+- Commit 6.1: corpus vocabulary (manifest plus a reviewed alias table),
+  conservative explicit company and period recognition, and manifest,
+  selected and cited evidence coverage. Diagnostic only: there is no
+  abstention or blocking, and a period missing from the manifest is
+  `not_in_manifest_reporting_periods`, not out of corpus. Vocabulary
+  `50057f9259f6`, analyzer `b447ce1aee09`
+  ([architecture.md](architecture.md#corpus-scope-analysis-stage-5-commit-61)).
+  *(implemented; offline)*
+- Commit 6.2: deterministic response guardrails (claim attribution, coverage
+  gaps, numeric trace). *(planned; any enforcement to be decided and
+  versioned)*
+- Commit 6.3: development-split category evaluation (deterministic metrics,
+  paid run on authorization). *(planned)*
+- Commit 6.4: one evidence-driven change, only if 6.3 justifies it.
+  *(conditional)*
 
 ## Stage 6 — RAG Evaluation & Benchmarking
 

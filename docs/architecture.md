@@ -10,8 +10,9 @@
 > Stage 4: Commits 5.1 (typed OpenAI provider layer), 5.2 (evidence context
 > and grounded prompt), 5.3 (structured grounded generation) and 5.4
 > (citation resolution and final response) implemented. Stage 4 is complete
-> locally and verified offline; hosted-model behaviour has not been verified
-> live.
+> locally and verified offline; hosted-model behaviour has not been
+> verified beyond one owner-reported manual live demo. Stage 5 (in progress):
+> Commit 6.1 adds diagnostic corpus scope and evidence coverage analysis.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -25,7 +26,9 @@
 >   policy);
 > - `founderlens.generation` (OpenAI provider layer, evidence context,
 >   grounded prompt, structured answer schema, generation service, citation
->   resolution and the end-to-end demo).
+>   resolution and the end-to-end demo);
+> - `founderlens.guardrails` (corpus vocabulary, question scope and evidence
+>   coverage diagnostics).
 >
 > Everything else below is the **planned** design and may change as
 > evaluation results come in.
@@ -1492,6 +1495,141 @@ one).
   refuses a second request and sends up to ten public-source chunks with
   `store=false`. It has not been run.
 
+## Corpus scope analysis (Stage 5, Commit 6.1)
+
+`founderlens.guardrails.scope` is a deterministic, label-free **diagnostic**.
+It recognizes the companies and reporting periods a question names and
+compares them with trusted metadata. It changes no retrieval, context, prompt,
+generation or response behaviour, and nothing in the frozen pipeline calls it.
+
+**Vocabulary** `CorpusVocabulary.from_manifest(manifest)` (version 1;
+`50057f9259f6` for the corpus manifest v1.0.0):
+- From the manifest: `company`, `ticker`, `document_id`, `fiscal_period`
+  and `period_end`.
+- From a small reviewed code table:
+  - aliases `NVIDIA` / `NVIDIA Corp` and `Alphabet` / `Alphabet Inc`;
+  - ticker `GOOGL`;
+  - the Alphabet segments `Google Cloud` and `Google Services`;
+  - the brand `Google`.
+- Nothing comes from evaluation files or outside sources.
+- An alias claimed by two companies is rejected.
+
+**Companies:**
+- Matches are token-bounded, never substring matches. Names are
+  case-insensitive, except `Alphabet`, which must be capitalized (the common
+  noun is not a company). Tickers must be upper case.
+- Longest forms match first, so `Google Cloud` wins over `Google`.
+- Generic terms (cloud, data center, AI, revenue) never match a company.
+- `Google Cloud` and `Google Services` are *segment* references of Alphabet,
+  not the consolidated company. A bare `Google` is Alphabet but flagged
+  `brand_ambiguous`.
+- An alias helps recognition only. It is not evidence that a value belongs to
+  that company.
+
+**Periods** (explicit forms only):
+- Fiscal quarters (`FY2025 Q4`, `Q4 FY2025`, `fourth quarter of fiscal 2025`,
+  `fiscal 2025 fourth quarter`, `fiscal Q4 2025`) and fiscal years (`FY2025`,
+  `fiscal year 2025`).
+- Calendar quarters and years only when marked `calendar` / `CY`.
+- Period-end dates after `ended` / `ending`.
+- Fiscal labels are company-relative. They match the manifest's
+  `fiscal_period` labels of the companies the question names, or of all
+  companies when none is named.
+- Fiscal quarters are never assumed to be calendar quarters. NVIDIA's fiscal
+  Q3 FY2025 ended 2024-10-27, so it is not calendar Q3 2024.
+- A calendar period or date matches a document only when the document's
+  `period_end` is that exact date. No fiscal quarter is inferred from a date.
+- `Q3 2024` with no basis marker is `basis_unspecified`, with fiscal-label
+  and calendar candidates listed separately.
+- These stay **unresolved** and are never guessed:
+  - relative periods (`last quarter`, `this year`, `recently`, `a year ago`);
+  - two-digit fiscal years (`FY25`);
+  - quarters without a year;
+  - dates without `ended`;
+  - bare years.
+- A period is not tied to the company nearest it in the question.
+
+**Manifest coverage is not content coverage.**
+- The manifest lists each release's own reporting period, but releases also
+  contain other periods' figures (prior-year comparatives, full-year totals).
+- A period not in the manifest is `not_in_manifest_reporting_periods`, never
+  "out of corpus". It is no evidence that the documents lack the value.
+- Nothing here abstains, blocks or filters a question.
+
+**Results** (frozen):
+- `QuestionScope` (analyzer `b447ce1aee09`, version 2):
+  - company references (canonical company, scope `company` / `segment` /
+    `brand_ambiguous`, match kind, matched text and span);
+  - period references (kind, canonical form, manifest status, manifest
+    documents, calendar candidates);
+  - unresolved mentions;
+  - vocabulary and analyzer IDs.
+- `metadata()` holds canonical identities and kinds, never question text.
+- `evidence_coverage(scope, selected_records, cited_ids=None)` is pure and
+  read-only. It reports each company, segment and period against three
+  layers:
+  1. manifest metadata;
+  2. model-visible (selected) evidence;
+  3. cited evidence.
+- Each layer is `present`, `absent`, `not_applicable` (segments, and periods
+  not in the manifest, cannot be decided from metadata) or `not_evaluated`.
+- `cited_ids=None` means citations were not evaluated (`not_evaluated`, cited
+  statuses `None`). `cited_ids=set()` means they were evaluated and none was
+  cited (`absent`, cited count 0). The two are never conflated.
+- Each period entity lists the companies owning its matched manifest
+  documents.
+- **Two status levels.**
+  - `*_reference_status` covers only the *assessable recognized* references:
+    - `complete`: all of them are present;
+    - `partial` / `none`: some / none are;
+    - `unknown`: references were recognized but none can be assessed;
+    - `not_applicable`: nothing was recognized.
+  - `*_question_status` is about the whole question. It equals the reference
+    status, except that `complete` or `not_applicable` becomes `unknown` when
+    `question_limitations` is not empty:
+    - `unresolved_references`: an explicit but unresolvable mention, such as
+      the bare `Q4` in "FY2025 Q3 and Q4", or `last quarter`;
+    - `unassessable_references`: a segment, or a period not in the manifest;
+    - `basis_unspecified_periods`;
+    - `fiscal_periods_without_named_company`: fiscal labels are
+      company-relative, so "FY2024 vs FY2025" with no company named may
+      match different companies' releases.
+  - `partial` and `none` are kept, because the gap is already known.
+- Downstream code must use the question status for any question-level
+  decision.
+- Neither level is answerability: metadata coverage is not proof that any
+  passage supports the question.
+- **Unicode offsets.** Matching runs on NFKC applied per base-character
+  segment (a character plus its combining marks), with a map back to the
+  original text. Every span and `matched_text` refers to the original
+  question, including after expanding (`ﬁ` ligature), composing
+  (`e` + combining acute) or full-width characters.
+
+**Identities:**
+- The vocabulary ID hashes its canonical content (corpus ID and version,
+  companies, aliases, tickers, segments, brands, document periods).
+- The analyzer ID hashes the rule version, normalization, coverage
+  semantics and every recognition rule. Version 2 (`b447ce1aee09`)
+  replaced the unreleased version 1 draft (`167feab01447`): spans now
+  refer to the original text, and reference and question coverage status
+  are separate.
+- Changing aliases or rules changes the matching ID. Baseline identities are
+  untouched.
+
+**Smoke** (`python -m founderlens.guardrails.scope --smoke`): real manifest
+and BM25 V2 evidence, no LLM call. Observed:
+
+Two runs produced identical output.
+
+| Question | Recognized | Unresolved / not assessable | Reference status | Question status (limitations) |
+|---|---|---|---|---|
+| Compare NVIDIA and Alphabet. | both companies | - | complete | complete |
+| Compare NVIDIA FY2025 Q3 and Q4. | NVIDIA; FY2025 Q3 (NVIDIA) | bare `Q4` (`quarter_without_year`) | complete | unknown (`unresolved_references`) |
+| What happened in FY2019? | - | FY2019 `not_in_manifest_reporting_periods` | unknown | unknown (`unassessable_references`, `fiscal_periods_without_named_company`) |
+| Compare FY2024 with FY2025. | FY2024 (Alphabet releases), FY2025 (NVIDIA releases) | - | complete | unknown (`fiscal_periods_without_named_company`) |
+| What was Google Cloud revenue? | Alphabet; segment Google Cloud | segment not decidable | complete | unknown (`unassessable_references`) |
+| What happened last quarter? | - | `relative_period` | not_applicable | unknown (`unresolved_references`) |
+
 ## Generation interfaces (Stage 4, implemented)
 
 - Retrieval: `load_policy_retriever(settings).search(question)` (Commit 4.3).
@@ -1556,6 +1694,7 @@ pass.
 | `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2), frozen retrieval policy and generation-facing BM25 V2 entry point (Commit 4.3; no model needed) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch (dense and embeddings only) |
+| `guardrails` *(scope diagnostics, Commit 6.1)* | Corpus vocabulary from the manifest, explicit company and period recognition, manifest / selected / cited coverage (diagnostic only); response guardrails planned (6.2) | corpus manifest, generation evidence records |
 | `generation` *(implemented, Commits 5.1–5.4)* | OpenAI Responses provider, configuration, typed results and errors; evidence validation, token budgeting, evidence registry and grounded prompt v1; answer schema, response invariants, local abstention and the generation service; citation resolution, the final response contract, rendering and the demo | openai, pydantic (provider); tiktoken, retrieval policy and types (context) |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |
