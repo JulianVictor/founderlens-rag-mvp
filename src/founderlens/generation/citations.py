@@ -73,7 +73,7 @@ from founderlens.generation.answer import (
     ClaimType,
     GroundedAnswer,
     ResponseContractError,
-    answer_problems,
+    answer_problem_details,
     answer_schema_id,
 )
 from founderlens.generation.context import (
@@ -338,9 +338,11 @@ class CitationResolver:
         problems = self._association_problems(run, answer)
         if problems:
             raise CitationResolutionError(problems, request_id=request_id)
-        invariant_problems = answer_problems(answer, run.prepared.evidence)
-        if invariant_problems:
-            raise ResponseContractError(invariant_problems, request_id=request_id)
+        details = answer_problem_details(answer, run.prepared.evidence)
+        if details:
+            raise ResponseContractError(
+                [d.message for d in details], request_id=request_id, details=details
+            )
         claims, citations = self._resolve_claims(answer, run, request_id)
         response = GroundedResponse(
             status=answer.status,

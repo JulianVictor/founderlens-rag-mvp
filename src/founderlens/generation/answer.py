@@ -52,6 +52,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from founderlens.generation.context import EvidenceRegistry
 from founderlens.generation.errors import GenerationError, safe_token
 from founderlens.generation.openai_provider import strict_output_format
+from founderlens.generation.schema import TokenUsage
 from founderlens.generation.token_budget import TokenCounter
 
 ANSWER_SCHEMA_VERSION = 1
@@ -61,13 +62,70 @@ DUPLICATE_REFERENCE_POLICY = "reject"
 _EVIDENCE_ID = re.compile(EVIDENCE_ID_SYNTAX)
 
 
+MAX_PROBLEM_ID_LENGTH = 32  # model-supplied evidence IDs in problems are cut to this length
+
+# Machine-readable invariant codes (diagnostics only: they are not part of any identity).
+PROBLEM_CODES = (
+    "insufficient_evidence_has_claims",
+    "claims_required",
+    "answered_has_limitations",
+    "limitations_required",
+    "blank_limitation",
+    "blank_claim_text",
+    "claim_cites_no_evidence",
+    "duplicate_evidence_id",
+    "malformed_evidence_id",
+    "unknown_evidence_id",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ContractProblem:
+    """One invariant violation: a stable code and positions, never answer text.
+
+    Positions are one-based. ``evidence_id`` is the model-supplied ID passed through
+    :func:`safe_token` and cut to :data:`MAX_PROBLEM_ID_LENGTH` characters.
+    """
+
+    code: str
+    message: str
+    claim_position: int | None = None
+    reference_position: int | None = None
+    limitation_position: int | None = None
+    evidence_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Persistable form: code, positions and the sanitized ID; no message text."""
+        return {
+            "code": self.code,
+            "claim_position": self.claim_position,
+            "reference_position": self.reference_position,
+            "limitation_position": self.limitation_position,
+            "evidence_id": self.evidence_id,
+        }
+
+
 class ResponseContractError(GenerationError):
-    """A parsed answer breaks the response invariants. Messages never quote answer text."""
+    """A parsed answer breaks the response invariants. Messages never quote answer text.
+
+    ``details`` holds the same violations as machine-readable :class:`ContractProblem`
+    records. ``usage`` is the provider-reported usage of the rejected response when the
+    caller had it (``None`` means unknown, never zero).
+    """
 
     category = "response_contract"
 
-    def __init__(self, problems: Sequence[str], *, request_id: str | None = None) -> None:
+    def __init__(
+        self,
+        problems: Sequence[str],
+        *,
+        request_id: str | None = None,
+        details: Sequence[ContractProblem] = (),
+        usage: TokenUsage | None = None,
+    ) -> None:
         self.problems = tuple(problems)
+        self.details = tuple(details)
+        self.usage = usage
         super().__init__("; ".join(self.problems[:5]), request_id=request_id)
 
 
@@ -145,49 +203,94 @@ class GroundedAnswer(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
-def answer_problems(answer: GroundedAnswer, evidence: EvidenceRegistry) -> list[str]:
-    """Every response-invariant violation; empty when the answer is structurally valid."""
-    problems: list[str] = []
+def answer_problem_details(
+    answer: GroundedAnswer, evidence: EvidenceRegistry
+) -> list[ContractProblem]:
+    """Every response-invariant violation as a typed record, in a fixed order."""
+    problems: list[ContractProblem] = []
     status = answer.status
     if status is AnswerStatus.INSUFFICIENT_EVIDENCE:
         if answer.claims:
-            problems.append("insufficient_evidence must have no claims")
+            problems.append(
+                ContractProblem(
+                    "insufficient_evidence_has_claims", "insufficient_evidence must have no claims"
+                )
+            )
     elif not answer.claims:
-        problems.append(f"{status.value} needs at least one claim")
+        problems.append(
+            ContractProblem("claims_required", f"{status.value} needs at least one claim")
+        )
     if status is AnswerStatus.ANSWERED and answer.limitations:
-        problems.append("answered must have no limitations")
+        problems.append(
+            ContractProblem("answered_has_limitations", "answered must have no limitations")
+        )
     if status is not AnswerStatus.ANSWERED and not answer.limitations:
-        problems.append(f"{status.value} needs at least one limitation")
+        problems.append(
+            ContractProblem("limitations_required", f"{status.value} needs at least one limitation")
+        )
     for position, limitation in enumerate(answer.limitations, start=1):
         if not limitation.strip():
-            problems.append(f"limitation {position} is blank")
+            problems.append(
+                ContractProblem(
+                    "blank_limitation",
+                    f"limitation {position} is blank",
+                    limitation_position=position,
+                )
+            )
     for position, claim in enumerate(answer.claims, start=1):
         label = f"claim {position}"
         if not claim.text.strip():
-            problems.append(f"{label}: text is blank")
+            problems.append(
+                ContractProblem("blank_claim_text", f"{label}: text is blank", position)
+            )
         if not claim.evidence_ids:
-            problems.append(f"{label}: cites no evidence")
+            problems.append(
+                ContractProblem("claim_cites_no_evidence", f"{label}: cites no evidence", position)
+            )
         seen: set[str] = set()
-        for evidence_id in claim.evidence_ids:
-            shown = safe_token(evidence_id)
+        for reference, evidence_id in enumerate(claim.evidence_ids, start=1):
+            # Model-supplied: sanitized and capped in both the message and the details.
+            sanitized = safe_token(evidence_id)
+            short = None if sanitized is None else sanitized[:MAX_PROBLEM_ID_LENGTH]
             if evidence_id in seen:
-                problems.append(f"{label}: evidence ID {shown} is cited twice")
+                message = f"{label}: evidence ID {short} is cited twice"
+                code = "duplicate_evidence_id"
+            elif not _EVIDENCE_ID.fullmatch(evidence_id):
+                message = f"{label}: {short} is not an evidence ID (E plus two digits)"
+                code = "malformed_evidence_id"
+            elif evidence_id not in evidence:
+                message = f"{label}: evidence ID {short} is not in this request's evidence"
+                code = "unknown_evidence_id"
+            else:
+                seen.add(evidence_id)
                 continue
             seen.add(evidence_id)
-            if not _EVIDENCE_ID.fullmatch(evidence_id):
-                problems.append(f"{label}: {shown} is not an evidence ID (E plus two digits)")
-            elif evidence_id not in evidence:
-                problems.append(f"{label}: evidence ID {shown} is not in this request's evidence")
+            problems.append(ContractProblem(code, message, position, reference, None, short))
     return problems
 
 
+def answer_problems(answer: GroundedAnswer, evidence: EvidenceRegistry) -> list[str]:
+    """Every response-invariant violation; empty when the answer is structurally valid."""
+    return [problem.message for problem in answer_problem_details(answer, evidence)]
+
+
 def validate_answer(
-    answer: GroundedAnswer, evidence: EvidenceRegistry, *, request_id: str | None = None
+    answer: GroundedAnswer,
+    evidence: EvidenceRegistry,
+    *,
+    request_id: str | None = None,
+    usage: TokenUsage | None = None,
 ) -> None:
-    """Raise :class:`ResponseContractError` listing every violation."""
-    problems = answer_problems(answer, evidence)
-    if problems:
-        raise ResponseContractError(problems, request_id=request_id)
+    """Raise :class:`ResponseContractError` listing every violation.
+
+    ``usage`` is attached to the error unchanged so a caller can account for a rejected
+    provider response; it never affects validation.
+    """
+    details = answer_problem_details(answer, evidence)
+    if details:
+        raise ResponseContractError(
+            [d.message for d in details], request_id=request_id, details=details, usage=usage
+        )
 
 
 # --------------------------------------------------------------------------- #

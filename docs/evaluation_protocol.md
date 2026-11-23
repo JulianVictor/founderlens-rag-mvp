@@ -467,6 +467,40 @@ marks only the diagnostics as failed. Local abstentions are completed
 outcomes. Failed and unrun questions are excluded from rate denominators but
 always counted, per category. Raw provider messages are never recorded.
 
+**Failure diagnostics (record schema 2).** Each failed record carries a
+`failure` block with codes only:
+- `stage`: `generation` (context or provider request), `answer_validation`
+  (local response invariants on a parsed provider answer),
+  `citation_resolution`, or `replay_verification`;
+- `error_category`, the sanitized provider `request_id` and HTTP
+  `status_code` when known;
+- `problems`: one entry per violated invariant, with a stable `code`
+  (`insufficient_evidence_has_claims`, `claims_required`,
+  `answered_has_limitations`, `limitations_required`, `blank_limitation`,
+  `blank_claim_text`, `claim_cites_no_evidence`, `duplicate_evidence_id`,
+  `malformed_evidence_id`, `unknown_evidence_id`), one-based claim, evidence
+  reference or limitation positions, and the model-supplied evidence ID passed
+  through `safe_token` and cut to 32 characters;
+- `usage_recorded`.
+
+The rejected answer, its text, the prompt, the question, passages and
+exception messages are never stored. A response-contract violation stays a
+failure: no repair, retry, fallback or status change. When the provider
+reported usage for a rejected answer, the record keeps it.
+
+**Usage accounting.** Provider usage is summed over every attempted request,
+failures included. Reports show `attempted_requests`, `requests_with_usage`
+and `usage_complete`; usage the provider did not report stays unknown
+(`None`), never zero, and incomplete totals are labelled as understating
+spend.
+
+**Record schema versions.** Version 2 adds the failure block and the usage of
+rejected answers. Version 1 records (Commit 6.3) remain replayable: their
+completed answers replay as before, and their failures are reported with
+`failure_diagnostics: not_recorded_in_record_schema_1` rather than invented
+details. A replay refuses records that mix schema versions or use an unknown
+one. Existing runs are never rewritten.
+
 **Run completion.** A run is complete only if every development question is
 `completed` exactly once, every guardrail check completed, and the run was
 neither aborted nor interrupted. Runs are never merged. An incomplete run is

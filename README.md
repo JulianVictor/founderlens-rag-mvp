@@ -31,7 +31,8 @@ reproducible evaluation.
 > - Stage 5 is in progress: diagnostic corpus scope and evidence coverage
 >   analysis (Commit 6.1), diagnostic response guardrails (Commit 6.2) and
 >   a development-split diagnostic evaluation harness (Commit 6.3,
->   offline-verified; no paid run yet), with no behaviour change.
+>   offline-verified; one authorized live run was incomplete and is not
+>   reportable), with no behaviour change.
 >
 > Retrieval quality is measured for BM25, dense and hybrid on the 19
 > answerable development questions only; the held-out split has not been
@@ -662,8 +663,13 @@ and makes no paid calls; the live LLM test is skipped unless
   Stage 6; later development-set tuning must be labelled post-tuning.
 - A paid run is never automatic: it needs `--live`,
   `FOUNDERLENS_RUN_PAID_EVAL=1`, an explicit `--max-requests` (at most 24),
-  a clean Git tree, the frozen identities and credentials. **No paid run
-  has been executed.**
+  a clean Git tree, the frozen identities and credentials. One authorized
+  live run (`live-20261123T111430692539Z-8665d379`) attempted 24 requests and completed 23; one
+  `response_contract` failure makes it incomplete and **not reportable**.
+- Failed questions keep safe diagnostics (record schema 2): stage, invariant
+  codes with positions, the provider request ID and, for a rejected answer,
+  its provider-reported usage. Answer text is never stored, and usage totals
+  say when some attempted request has no recorded usage.
 
 **Not implemented:** guardrail enforcement, claim-support
 verification, answer-level evaluation and the judge, the Streamlit demo,

@@ -671,7 +671,8 @@ def test_usage_estimates_and_price_are_separate(tmp_path: pathlib.Path) -> None:
     price = ge.Price(Decimal("1.00"), Decimal("4.00"), date(2026, 11, 1))
     outputs, _ = _execute(tmp_path, price=price)
     usage = outputs.report["overall"]["provider_usage"]
-    assert usage["requests"] == 5
+    assert (usage["attempted_requests"], usage["requests_with_usage"]) == (5, 5)
+    assert usage["usage_complete"] is True
     assert usage["input_tokens"] == {"reported_n": 5, "total": 500}
     assert usage["cached_input_tokens"] == {"reported_n": 0, "total": None}
     estimates = outputs.report["overall"]["local_token_estimates"]

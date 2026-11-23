@@ -15,7 +15,8 @@
 > Commit 6.1 adds diagnostic corpus scope and evidence coverage analysis;
 > Commit 6.2 adds deterministic, diagnostic-only response guardrails;
 > Commit 6.3 adds the development-split diagnostic evaluation harness
-> (offline-verified; no paid run yet).
+> (offline-verified; one authorized live run, `live-20261123T111430692539Z-8665d379`, is incomplete:
+> 23 of 24 completed, one `response_contract` failure; not reportable).
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -1862,6 +1863,17 @@ every fact has an accepted selected page (12/14). Both equal the frozen
 benchmark's Recall@10 and complete coverage@10 and do not depend on the
 provider. `accepted_page_citation_overlap` is a reference-alignment
 diagnostic, not semantic citation precision or claim support.
+
+**Failure diagnostics** (record schema 2). `validate_answer()` builds typed
+`ContractProblem` records (code, positions, sanitized evidence ID) next to the
+unchanged messages, and `ResponseContractError` carries them plus the
+provider-reported usage of the rejected answer. The service passes that usage
+only as error metadata; validation, the exception category and propagation are
+unchanged, and no identity changes. The harness records a `failure` block
+(stage, category, problem codes, request ID, status code) and keeps the
+rejected answer's usage, so attempted requests and requests with recorded
+usage are reported separately. Schema 1 records stay replayable, with missing
+diagnostics reported as not recorded.
 
 **Outputs** (git-ignored `reports/generation_eval/`, one run ID per run,
 never overwritten): `<run_id>.records.jsonl` (private: answers and citation

@@ -258,7 +258,9 @@ Commits:
   diagnostics with explicit denominators; offline dry run and replay;
   hard-capped, explicitly authorized live mode.
   *(implemented; offline-verified; the paid run needs separate explicit
-  authorization and has not been executed)*
+  authorization; the first authorized live run, `live-20261123T111430692539Z-8665d379`,
+  completed 23 of 24 questions with one `response_contract` failure, so it is
+  incomplete and not reportable)*
 - Commit 6.4: one evidence-driven change, only if 6.3 justifies it.
   *(conditional)*
 

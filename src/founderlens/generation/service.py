@@ -261,7 +261,12 @@ class GroundedGenerationService:
         provider_started = time.perf_counter()
         generated = self._provider.generate_structured(prepared.request, GroundedAnswer)
         provider_ms = (time.perf_counter() - provider_started) * 1000
-        validate_answer(generated.parsed, prepared.evidence, request_id=generated.request_id)
+        validate_answer(
+            generated.parsed,
+            prepared.evidence,
+            request_id=generated.request_id,
+            usage=generated.usage,  # diagnostics only: a rejected response still cost tokens
+        )
         return GenerationRunResult(
             answer=generated.parsed,
             origin=AnswerOrigin.MODEL,

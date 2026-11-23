@@ -40,6 +40,11 @@ diagnostic. Record SHA-256 digests detect accidental modification, not
 deliberate forgery. ``accepted_page_citation_overlap`` is a reference-alignment
 diagnostic, not semantic citation support.
 
+Failures (record schema 2) keep a ``failure`` block: stage, category, invariant
+codes with positions, the sanitized provider request ID and status code. A
+rejected answer's provider usage is kept; its text never is. Schema 1 records
+replay, with their missing diagnostics reported as not recorded.
+
 Outputs (git-ignored ``reports/generation_eval/``): ``<run_id>.records.jsonl``
 (private: answers and citations, no question text), ``<run_id>.json`` and
 ``<run_id>.md`` (codes, IDs and numbers only).
@@ -75,7 +80,12 @@ from founderlens.evaluation.benchmark import (
     load_dev_split,
 )
 from founderlens.evaluation.schema import Category, EvalQuestion
-from founderlens.generation.answer import AnswerStatus, answer_schema_id
+from founderlens.generation.answer import (
+    AnswerStatus,
+    ContractProblem,
+    ResponseContractError,
+    answer_schema_id,
+)
 from founderlens.generation.citations import (
     CitationResolver,
     GroundedResponse,
@@ -110,7 +120,9 @@ from founderlens.retrieval.policy import PolicyRetriever
 
 EVALUATION_KIND: Final = "diagnostic_deterministic"
 PROTOCOL_VERSION: Final = "1.2"
-RECORD_SCHEMA_VERSION: Final = 1
+# 2: failure diagnostics (stage, problem codes, request ID) and usage of rejected answers.
+RECORD_SCHEMA_VERSION: Final = 2
+REPLAYABLE_RECORD_SCHEMA_VERSIONS: Final = (1, 2)  # 1 is legacy: no failure diagnostics
 REPORT_TYPE: Final = "generation_diagnostic_evaluation"
 CAVEAT: Final = (
     "These diagnostics do not establish answer correctness, faithfulness, claim-level "
@@ -459,6 +471,7 @@ def _base_record(
         "local_token_estimate": None,
         "identities": dict(identities),
         "replay_of": None,
+        "failure": None,
     }
 
 
@@ -554,6 +567,51 @@ class RunState:
     systemic_category: str | None = None
 
 
+STAGE_GENERATION = "generation"  # context preparation or the provider request
+STAGE_ANSWER_VALIDATION = "answer_validation"  # local invariants on a parsed provider answer
+STAGE_CITATION_RESOLUTION = "citation_resolution"
+STAGE_REPLAY = "replay_verification"
+
+
+def _failure_block(
+    category: str,
+    stage: str,
+    *,
+    problems: Sequence[Mapping[str, Any]] = (),
+    request_id: str | None = None,
+    status_code: int | None = None,
+    usage_recorded: bool = False,
+) -> dict[str, Any]:
+    """Safe failure diagnostics: codes, positions and sanitized IDs only, never text."""
+    return {
+        "stage": stage,
+        "error_category": category,
+        "problems": [dict(p) for p in problems],
+        "request_id": request_id,
+        "status_code": status_code,
+        "usage_recorded": usage_recorded,
+    }
+
+
+def _fail(record: dict[str, Any], error: GenerationError, stage: str) -> None:
+    """Mark a failure. A rejected provider answer keeps its provider-reported usage."""
+    record["outcome"] = FAILED
+    record["error_category"] = error.category
+    details: tuple[ContractProblem, ...] = ()
+    if isinstance(error, ResponseContractError):
+        details = error.details
+        if error.usage is not None and record.get("usage") is None:
+            record["usage"] = error.usage.to_dict()
+    record["failure"] = _failure_block(
+        error.category,
+        stage,
+        problems=[d.to_dict() for d in details],
+        request_id=error.request_id,  # already sanitized by GenerationError (safe_token)
+        status_code=error.status_code,
+        usage_recorded=_has_usage(record),
+    )
+
+
 def evaluate_question(
     question: EvalQuestion,
     answer: Answerer,
@@ -573,8 +631,12 @@ def evaluate_question(
         record["outcome"] = NOT_RUN_BUDGET
         return record
     except GenerationError as error:
-        record["outcome"] = FAILED
-        record["error_category"] = error.category
+        stage = (
+            STAGE_ANSWER_VALIDATION
+            if isinstance(error, ResponseContractError)
+            else STAGE_GENERATION
+        )
+        _fail(record, error, stage)
         record["provider_attempted"] = attempts() > before
         if error.category in SYSTEMIC_CATEGORIES:
             state.aborted = True
@@ -586,13 +648,13 @@ def evaluate_question(
     try:
         response = pipeline.resolver.resolve(run)
     except GenerationError as error:
-        record["outcome"] = FAILED
-        record["error_category"] = error.category
+        _fail(record, error, STAGE_CITATION_RESOLUTION)
         return record
     record.update(_response_fields(response))
     if expected_citations is not None and record["citations"] != list(expected_citations):
         record["outcome"] = FAILED
         record["error_category"] = ReplayMismatchError.category
+        record["failure"] = _failure_block(ReplayMismatchError.category, STAGE_REPLAY)
         return record
     record["outcome"] = COMPLETED
     try:
@@ -644,6 +706,8 @@ def run_questions(
                     record["replay_of"] = _replay_origin(source)
                     # Replay creates no provider-usage or latency observation.
                     record.update(usage=None, timings=None, provider=None)
+                    if record.get("failure"):
+                        record["failure"]["usage_recorded"] = False
             sink.write(record)
             pending.pop(0)
     except KeyboardInterrupt:
@@ -658,11 +722,23 @@ def run_questions(
 def _replay_origin(source: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if source is None:
         return None
+    version = source.get("record_schema_version")
+    failed = source.get("outcome") == FAILED
     return {
         "run_id": source.get("run_id"),
         "mode": source.get("mode"),
+        "record_schema_version": version,
         "outcome": source.get("outcome"),
+        "error_category": source.get("error_category"),
+        "provider_attempted": source.get("provider_attempted"),
         "usage": source.get("usage"),
+        # Schema 1 never recorded failure diagnostics; they are reported as missing, not invented.
+        "failure": source.get("failure") if version != 1 else None,
+        "failure_diagnostics": None
+        if not failed
+        else "recorded"
+        if version != 1
+        else "not_recorded_in_record_schema_1",
         "record_sha256": source.get("record_sha256"),
     }
 
@@ -723,6 +799,66 @@ def _mean(values: Sequence[float], population: str, counts_only: bool) -> dict[s
         if len(values) < 10:
             out["small_sample_warning"] = True
     return out
+
+
+def _has_usage(record: Mapping[str, Any]) -> bool:
+    usage = record.get("usage")
+    return isinstance(usage, dict) and any(usage.get(k) is not None for k in USAGE_KEYS)
+
+
+def failure_diagnostics(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Failed questions by stage and invariant code; codes and IDs only."""
+    failed = [r for r in records if r["outcome"] == FAILED]
+    stages: dict[str, int] = {}
+    codes: dict[str, int] = {}
+    for r in failed:
+        block = r.get("failure")
+        if not block:
+            continue
+        stages[block["stage"]] = stages.get(block["stage"], 0) + 1
+        for problem in block["problems"]:
+            codes[problem["code"]] = codes.get(problem["code"], 0) + 1
+    return {
+        "failed": len(failed),
+        "with_diagnostics": sum(1 for r in failed if r.get("failure")),
+        "by_stage": dict(sorted(stages.items())),
+        "problem_codes": dict(sorted(codes.items())),
+        "questions": [
+            {
+                "question_id": r["question_id"],
+                "category": r["category"],
+                "error_category": r["error_category"],
+                "stage": (r.get("failure") or {}).get("stage"),
+                "problem_codes": [p["code"] for p in (r.get("failure") or {}).get("problems", [])],
+                "usage_recorded": _has_usage(r),
+            }
+            for r in sorted(failed, key=lambda r: r["question_id"])
+        ],
+    }
+
+
+def provider_usage(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Provider-reported usage over every attempted request, failures included.
+
+    Totals cover only requests with recorded usage. When some attempted request has
+    none (unknown, never zero), the totals understate spend and say so.
+    """
+    attempted = [r for r in records if r.get("provider_attempted")]
+    with_usage = sum(1 for r in attempted if _has_usage(r))
+    complete = bool(attempted) and with_usage == len(attempted)
+    return {
+        "population": "questions with an attempted provider request (failures included)",
+        "attempted_requests": len(attempted),
+        "requests_with_usage": with_usage,
+        "failed_requests_with_usage": sum(
+            1 for r in attempted if r["outcome"] == FAILED and _has_usage(r)
+        ),
+        "usage_complete": complete,
+        "note": None
+        if complete or not attempted
+        else "usage unknown for some attempted requests: totals understate spend",
+        **{key: _sum_usage(attempted, key) for key in USAGE_KEYS},
+    }
 
 
 def _sum_usage(records: Sequence[Mapping[str, Any]], key: str) -> dict[str, Any]:
@@ -898,11 +1034,7 @@ def category_metrics(
             ),
             "numeric_trace": dict(sorted(numeric.items())),
         },
-        "provider_usage": {
-            "population": "completed questions answered by the provider",
-            "requests": len(provider_called),
-            **{key: _sum_usage(provider_called, key) for key in USAGE_KEYS},
-        },
+        "provider_usage": provider_usage(records),
         "local_token_estimates": {
             "note": "local tokenizer estimate of instructions + input; not provider usage",
             "n": len(estimates),
@@ -947,8 +1079,11 @@ class Price:
             / Decimal(1_000_000)
             for u in rows
         )
+        accounting = provider_usage(records)
         return {
             "note": "estimate from provider-reported usage and the user-supplied price",
+            "attempted_requests": accounting["attempted_requests"],
+            "usage_complete": accounting["usage_complete"],
             "price_effective_date": self.effective_date.isoformat(),
             "input_usd_per_mtok": str(self.input_usd_per_mtok),
             "output_usd_per_mtok": str(self.output_usd_per_mtok),
@@ -1052,12 +1187,14 @@ def aggregate(
             for r in sorted(records, key=lambda r: r["question_id"])
         ],
         "cost_estimate": None if price is None else price.estimate(records),
+        "record_schema_version": RECORD_SCHEMA_VERSION,
+        "failure_diagnostics": failure_diagnostics(records),
     }
     if mode == "replay":
         originals = [r["replay_of"] for r in records if r.get("replay_of")]
         report["original_run_usage"] = {
+            **provider_usage(originals),
             "note": "provider usage recorded by the original run; replay sent no request",
-            **{key: _sum_usage(originals, key) for key in USAGE_KEYS},
         }
     return report
 
@@ -1176,6 +1313,15 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         f"Error categories: {overall['error_categories'] or 'none'}",
         "",
+        "Failure diagnostics (codes only): "
+        + (
+            "; ".join(
+                f"{q['question_id']} {q['stage']} {','.join(q['problem_codes']) or '-'}"
+                for q in report["failure_diagnostics"]["questions"]
+            )
+            or "none"
+        ),
+        "",
         f"Citation invariants: {overall['citation_structural_invariants']['citations']} citations, "
         f"{overall['citation_structural_invariants']['violations']} violations.",
         "",
@@ -1187,9 +1333,10 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Usage",
         "",
-        f"Provider requests: {overall['provider_usage']['requests']} "
-        f"(attempted {report['request_budget']['attempted_requests']}, "
-        f"cap {report['request_budget']['max_requests']})",
+        f"Attempted provider requests: {overall['provider_usage']['attempted_requests']} "
+        f"(cap {report['request_budget']['max_requests']}); with recorded usage: "
+        f"{overall['provider_usage']['requests_with_usage']}"
+        + ("" if overall["provider_usage"]["usage_complete"] else " (totals understate spend)"),
         *(
             f"- {k}: {v['total']} (reported for {v['reported_n']})"
             for k, v in overall["provider_usage"].items()
@@ -1240,7 +1387,7 @@ def check_replay_records(
     by_id: dict[str, Mapping[str, Any]] = {}
     for index, record in enumerate(records, start=1):
         where = f"record {index}"
-        if record.get("record_schema_version") != RECORD_SCHEMA_VERSION:
+        if record.get("record_schema_version") not in REPLAYABLE_RECORD_SCHEMA_VERSIONS:
             problems.append(f"{where}: unsupported record schema")
             continue
         if not is_sealed(record):
@@ -1268,6 +1415,8 @@ def check_replay_records(
         by_id[str(qid)] = record
     if len({r.get("run_id") for r in records}) > 1:
         problems.append("records come from more than one run; runs are never merged")
+    if len({r.get("record_schema_version") for r in records}) > 1:
+        problems.append("records mix record schema versions")
     if problems:
         raise EvaluationRunError(problems)
     return by_id
