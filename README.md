@@ -28,13 +28,14 @@ reproducible evaluation.
 >   complete locally and verified offline with synthetic, fake and mocked
 >   providers. The project owner reports one successful manual live demo
 >   (one request); that is a functional smoke test, not a benchmark.
-> - Stage 5 has started: diagnostic corpus scope and evidence coverage
->   analysis (Commit 6.1), with no behaviour change.
+> - Stage 5 is in progress: diagnostic corpus scope and evidence coverage
+>   analysis (Commit 6.1) and diagnostic response guardrails (Commit 6.2),
+>   with no behaviour change.
 >
 > Retrieval quality is measured for BM25, dense and hybrid on the 19
 > answerable development questions only; the held-out split has not been
-> used. Answer evaluation, response guardrails, the demo UI and deployment
-> are **not implemented yet**. See
+> used. Answer evaluation, response guardrail enforcement, the demo UI and
+> deployment are **not implemented yet**. See
 > [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
@@ -194,6 +195,9 @@ python -m founderlens.generation.demo --live --question "What revenue did NVIDIA
 # Stage 5 scope diagnostics (no LLM call)
 python -m pytest tests/test_guardrails_scope.py -q
 python -m founderlens.guardrails.scope --smoke
+# Stage 5 response guardrails (SYNTHETIC answers over the real corpus, no LLM call)
+python -m pytest tests/test_guardrails_response_checks.py -q
+python -m founderlens.guardrails.response_checks --smoke
 $env:FOUNDERLENS_REAL_TOKENIZER = "1"; $env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_generation_context_real.py -q
 # Opt-in PAID live smoke test (two tiny calls, synthetic text); never run by CI
 $env:FOUNDERLENS_RUN_LIVE_LLM_TESTS = "1"; python -m pytest tests/test_generation_openai_live.py -q
@@ -608,7 +612,33 @@ and makes no paid calls; the live LLM test is skipped unless
 - Diagnostic only: no abstention, blocking or behaviour change. Vocabulary
   `50057f9259f6`, analyzer `b447ce1aee09`.
 
-**Not implemented:** response guardrails (6.2), claim-support
+**Implemented (Commit 6.2, Stage 5), see [docs/architecture.md](docs/architecture.md#response-guardrails-stage-5-commit-62):**
+- `founderlens.guardrails.response_checks.check_response(response, vocabulary)`
+  returns a `GuardrailReport` of typed findings:
+  - `company_attribution_gap` (warning): a claim names a company that none
+    of its own citations belongs to;
+  - `period_attribution_gap` (notice): a suspected period mismatch;
+  - `question_coverage_gap` (warning for `answered`, otherwise notice): a
+    question company or period was not selected or not cited;
+  - `numeric_trace_gap` (notice): a reported value is not in its cited
+    passages, or a calculated claim has no observable operand;
+  - `scope_unresolved` (notice): the Commit 6.1 question limitations.
+- Diagnostic only: the response is never rewritten, blocked or
+  downgraded, and there is no LLM call. A finding is a signal for review,
+  not proof of error. A clean report is not proof of support.
+- The numeric trace is conservative: no unit conversion, rounding or
+  recomputation, so `$39,300 million` vs `$39.3 billion` stays an
+  uncertain notice. Prior-year comparatives and segment details cannot be
+  decided from metadata and are counted, not flagged.
+- A supplied question scope must equal the analysis of the response's own
+  question, or the check is refused. The baseline service and resolver are
+  unchanged; `GuardedRunner` is an optional wrapper.
+- Company attribution is not metric correctness, document-period metadata
+  is not the period of every fact in a release, and exact numeric matching
+  is not arithmetic or semantic validation.
+- Guardrail policy `3f202ebc205a`. All baseline identities are unchanged.
+
+**Not implemented:** guardrail enforcement, claim-support
 verification, answer-level evaluation and the judge, the Streamlit demo,
 deployment. No formal live evaluation and no held-out results exist.
 
@@ -618,7 +648,7 @@ deployment. No formal live evaluation and no held-out results exist.
 2. Document Ingestion Pipeline
 3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
 4. Grounded RAG Generation — *complete locally (5.1–5.4, offline-verified; live behaviour unverified)*
-5. Cross-Document Reasoning & Guardrails — *in progress (6.1 scope diagnostics)*
+5. Cross-Document Reasoning & Guardrails — *in progress (6.1 scope diagnostics, 6.2 diagnostic response checks)*
 6. RAG Evaluation & Benchmarking
 7. Streamlit Interactive Demo
 8. Testing, Deployment & Documentation

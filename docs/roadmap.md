@@ -9,7 +9,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
 | 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
-| 5 | Cross-Document Reasoning & Guardrails | In progress (Commit 6.1 scope diagnostics implemented) |
+| 5 | Cross-Document Reasoning & Guardrails | In progress (Commits 6.1 scope diagnostics and 6.2 response checks implemented) |
 | 6 | RAG Evaluation & Benchmarking | Planned |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
@@ -239,11 +239,18 @@ Commits:
   `50057f9259f6`, analyzer `b447ce1aee09`
   ([architecture.md](architecture.md#corpus-scope-analysis-stage-5-commit-61)).
   *(implemented; offline)*
-- Commit 6.2: deterministic response guardrails (claim attribution, coverage
-  gaps, numeric trace). *(planned; any enforcement to be decided and
+- Commit 6.2: deterministic response guardrails: per-claim company and
+  period attribution, question coverage gaps, a conservative numeric trace
+  and scope limitations. They are diagnostic only (`enforcement:
+  diagnostic_only`): nothing is rewritten, blocked or abstained, and
+  responses are unchanged. Policy `3f202ebc205a`
+  ([architecture.md](architecture.md#response-guardrails-stage-5-commit-62)).
+  *(implemented; offline; any enforcement must be decided from 6.3 and
   versioned)*
 - Commit 6.3: development-split category evaluation (deterministic metrics,
-  paid run on authorization). *(planned)*
+  paid run on authorization). *(next milestone; needs a separate
+  evaluation-protocol review and explicit authorization for any paid
+  execution)*
 - Commit 6.4: one evidence-driven change, only if 6.3 justifies it.
   *(conditional)*
 

@@ -12,7 +12,8 @@
 > (citation resolution and final response) implemented. Stage 4 is complete
 > locally and verified offline; hosted-model behaviour has not been
 > verified beyond one owner-reported manual live demo. Stage 5 (in progress):
-> Commit 6.1 adds diagnostic corpus scope and evidence coverage analysis.
+> Commit 6.1 adds diagnostic corpus scope and evidence coverage analysis;
+> Commit 6.2 adds deterministic, diagnostic-only response guardrails.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -28,7 +29,7 @@
 >   grounded prompt, structured answer schema, generation service, citation
 >   resolution and the end-to-end demo);
 > - `founderlens.guardrails` (corpus vocabulary, question scope and evidence
->   coverage diagnostics).
+>   coverage diagnostics; diagnostic response checks).
 >
 > Everything else below is the **planned** design and may change as
 > evaluation results come in.
@@ -1630,6 +1631,180 @@ Two runs produced identical output.
 | What was Google Cloud revenue? | Alphabet; segment Google Cloud | segment not decidable | complete | unknown (`unassessable_references`) |
 | What happened last quarter? | - | `relative_period` | not_applicable | unknown (`unresolved_references`) |
 
+## Response guardrails (Stage 5, Commit 6.2)
+
+`founderlens.guardrails.response_checks` inspects a finished
+`GroundedResponse` and returns a `GuardrailReport`. It is
+**diagnostic only** (`enforcement: diagnostic_only`).
+
+- Nothing is rewritten. The status, claims, claim types, evidence IDs,
+  citations, limitations, usage, identities and trace stay as resolved.
+- `GuardedResponse(response, report)` keeps the two apart.
+  `GuardedRunner(service, resolver, vocabulary).answer(question)` wraps the
+  existing calls. `GroundedGenerationService.answer()` and
+  `CitationResolver.resolve()` are unchanged, so the baseline produces the
+  same responses.
+- There is no LLM call, no second retrieval, no context change and no
+  network use.
+- The question scope is always computed from the response's own question
+  (`response.run.prepared.question`). An explicitly supplied `scope` is
+  accepted only if it equals that analysis exactly, so a scope from another
+  question, vocabulary or analyzer version is rejected and can never
+  produce findings for an unrelated question.
+- Malformed inputs raise `GuardrailError`, and no report is produced:
+  - the response, vocabulary or scope has the wrong type;
+  - the supplied scope does not match the response question, vocabulary or
+    analyzer;
+  - a claim cites an evidence ID with no resolved citation.
+- `GuardedRunner` calls the service once and the resolver once. Provider,
+  citation and guardrail errors propagate unchanged; a failed check never
+  yields a clean report.
+
+**Findings.** Each finding is frozen and has:
+- a category and a severity;
+- a detail code;
+- the claim position, or `None` for question-level findings;
+- canonical company and period labels;
+- request-scoped evidence IDs;
+- normalized numeric values.
+
+No finding holds question, claim, limitation or passage text. A finding is a
+signal for review and evaluation. It never says a claim is false or
+hallucinated, and a clean report does not mean an answer is correct.
+
+**Interpretation.**
+- A diagnostic finding is not a confirmed answer error, and no finding is
+  not a factual-correctness verdict.
+- Company attribution checks which company's documents a claim cites, not
+  whether the financial metric, its value or its sign is right.
+- Period checks compare a claim's period with the cited document's
+  reporting-period metadata. A release also states facts about other
+  periods, so the metadata is not the period of every fact inside it.
+- The numeric trace is exact text matching after normalization. It is not
+  arithmetic, unit or semantic validation. `matched` (same unit marker) and
+  `number_only` (same digits, unit unverified) are counted separately.
+- The baseline (`GroundedGenerationService` then `CitationResolver`) is
+  unchanged and remains the default path. The guarded wrapper is optional.
+
+**Sensitivity.** Reports keep canonical company and period labels,
+request-scoped evidence IDs and normalized numeric values (for example
+`99.9billion`). Those values come from the answer, so a future
+public-facing service should not log them by default. Error messages carry
+only codes and claim positions.
+
+| Category | Severity | Detail codes | Meaning |
+|---|---|---|---|
+| `company_attribution_gap` | warning | `named_company_not_cited`, `named_segment_parent_not_cited`, `named_brand_company_not_cited` | A claim names a company (name, alias, ticker, segment or brand), but none of **that claim's** cited records belongs to it. |
+| `period_attribution_gap` | notice | `named_period_not_cited`, `basis_unspecified_period_not_cited` | A claim names a manifest period, but none of its cited documents is that period (for a basis-unspecified period, none of its calendar candidates). This is a suspected mismatch only. |
+| `question_coverage_gap` | warning when `answered`, otherwise notice | `absent_from_selected_evidence`, `selected_but_not_cited` | An assessable company or period in the question is missing from the selected evidence, or was selected but not cited. |
+| `numeric_trace_gap` | notice | `value_not_found_verbatim`, `no_observable_operand` | A `reported` value is not in its cited passages, or a `calculated` claim has no observable operand. |
+| `scope_unresolved` | notice | one per Commit 6.1 `question_limitations` code | The question has unresolved, unassessable, basis-unspecified or company-unspecified fiscal references. |
+
+**Attribution rules.**
+- Claim text is analyzed with the frozen Commit 6.1 analyzer and
+  vocabulary, so generic terms ("the company", "segments") never match.
+- A segment such as Google Cloud is satisfied only by Alphabet evidence.
+  Even then the segment itself cannot be checked from metadata, so it is
+  counted as `segment_attribution_unverifiable`, never as confirmed.
+- A claim period outside the manifest is counted as
+  `claim_periods_not_assessed` and produces no finding. An example is the
+  FY2024 comparative inside NVIDIA's FY2025 Q4 release.
+- Fiscal labels are matched only to the named companies' documents.
+
+**Coverage rules.**
+- The Commit 6.1 `evidence_coverage` contract is reused unchanged, on the
+  selected records and the cited evidence IDs.
+- Local abstentions never reached the model, so their cited layer is
+  `not_evaluated` (`None`). A model answer with no citations was evaluated:
+  its cited layer is empty and `absent`.
+- Segment entities are skipped.
+- No status is changed, and no `out_of_corpus` abstention exists.
+
+**Numeric trace.**
+- Only values with a financial marker are extracted: a currency sign, a
+  scale word, a percent, or thousands separators.
+- Spans the analyzer recognizes as periods, dates or unresolved references
+  are masked first. Bare years, dates, page numbers, evidence IDs and
+  citation numbers are never values.
+- Normalization removes currency signs and thousands separators, then
+  compares exact `Decimal` values: `$39.30 billion` equals `$39.3 billion`,
+  `78 percent` equals `78.0%`, and `$39.3bn` equals `$39.3 billion`.
+- A scaled claim against the same digits with no scale (a table "in
+  millions") is `number_only`. That is compatible but unit-unverified, and
+  produces no finding.
+- There is **no unit conversion and no rounding.** `$39,300 million`
+  against `$39.3 billion` stays not found, and so does `$39 billion`
+  against `$39.3 billion`. Both are notices that mean "uncertain".
+- A currency or scaled amount never matches a percentage.
+- `synthesis` claims are not traced.
+- `calculated` claims only report a missing observable operand. There is
+  no recomputation and no entailment.
+
+**False positives (signals that are often legitimate):**
+- a period mismatch from a comparative or quarterly figure inside another
+  period's release;
+- a value correctly converted or rounded by the model;
+- a company named only in passing ("unlike Alphabet");
+- `selected_but_not_cited` when the model rightly ignored irrelevant
+  evidence.
+
+**False negatives (what passes silently):**
+- a value present in the passage but attributed to the wrong metric,
+  period or sign;
+- wrong arithmetic;
+- unsupported reasoning;
+- unnamed companies or periods ("the company", "the quarter");
+- segment-level errors under a cited parent;
+- numbers written without a financial marker.
+
+**Identity.** The guardrail policy ID hashes:
+- the policy version;
+- `enforcement: diagnostic_only`;
+- the categories, severities and detail codes;
+- the numeric pattern, scales and semantics;
+- the attribution and coverage semantics;
+- the vocabulary and analyzer IDs.
+
+It holds no questions, answers, timestamps or paths. It is separate from
+the response contract (`debe65096147`).
+
+| Identity | Value |
+|---|---|
+| Guardrail policy (real manifest) | `3f202ebc205a` |
+| Vocabulary | `50057f9259f6` |
+| Analyzer | `b447ce1aee09` |
+
+The retrieval, context, prompt, generation, answer schema and response
+contract identities are unchanged.
+
+**Smoke** (`python -m founderlens.guardrails.response_checks --smoke`).
+- Setup: real manifest, frozen BM25 V2 policy, prepared tokenizer, and a
+  **SYNTHETIC** scripted provider that builds claims from the retrieved
+  evidence (one deliberately fabricated value).
+- No model call and no evaluation questions.
+- Two runs produced byte-identical output.
+
+| Scenario | Status | Findings | Assessment |
+|---|---|---|---|
+| single-company factual (value copied from the passage) | answered | none (`values_matched` 1) | expected |
+| cross-company, only NVIDIA cited | answered | warning `named_company_not_cited` (Alphabet), warning `selected_but_not_cited` (Alphabet) | expected |
+| cross-company, both cited | answered | none | expected |
+| temporal comparison FY2025 Q3 vs Q4 | answered | none | expected |
+| unsupported period FY2019 | insufficient_evidence | notice `selected_but_not_cited` (NVIDIA), notice `unassessable_references` | expected: the model abstained, and FY2019 is not a manifest period |
+| ambiguous period "Q3 2024" | answered | notice `basis_unspecified_periods` | expected |
+| mismatched number ($99.9 billion) | answered | notice `value_not_found_verbatim` (`99.9billion`) | expected |
+
+No false positives appeared in these seven scripted scenarios. That is a
+smoke test, not a precision measurement.
+
+**How 6.3 uses it.** The development-split evaluation (not implemented)
+can run `check_response` on each response and aggregate the findings by
+category, severity and question category. It can then compare them with
+labels: for example, whether attribution warnings concentrate on
+cross-document questions, and how often numeric notices coincide with
+wrong values. Any enforcement must be decided from those results and
+versioned as a new policy.
+
 ## Generation interfaces (Stage 4, implemented)
 
 - Retrieval: `load_policy_retriever(settings).search(question)` (Commit 4.3).
@@ -1694,7 +1869,7 @@ pass.
 | `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2), frozen retrieval policy and generation-facing BM25 V2 entry point (Commit 4.3; no model needed) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch (dense and embeddings only) |
-| `guardrails` *(scope diagnostics, Commit 6.1)* | Corpus vocabulary from the manifest, explicit company and period recognition, manifest / selected / cited coverage (diagnostic only); response guardrails planned (6.2) | corpus manifest, generation evidence records |
+| `guardrails` *(scope diagnostics, Commit 6.1)* | Corpus vocabulary from the manifest, explicit company and period recognition, manifest / selected / cited coverage; per-claim company, period and numeric checks and question coverage findings (Commit 6.2); all diagnostic only | corpus manifest, generation evidence records |
 | `generation` *(implemented, Commits 5.1–5.4)* | OpenAI Responses provider, configuration, typed results and errors; evidence validation, token budgeting, evidence registry and grounded prompt v1; answer schema, response invariants, local abstention and the generation service; citation resolution, the final response contract, rendering and the demo | openai, pydantic (provider); tiktoken, retrieval policy and types (context) |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |
