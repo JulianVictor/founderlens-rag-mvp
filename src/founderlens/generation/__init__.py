@@ -6,8 +6,9 @@ protocol (``schema``), sanitized error types (``errors``) and an OpenAI
 Responses API adapter (``openai_provider``). Commit 5.2 adds evidence context,
 token budgeting and the grounded prompt (``context``, ``token_budget``,
 ``prompts``). Commit 5.3 adds the structured answer schema and invariants
-(``answer``) and the generation service (``service``). Citation resolution is
-Commit 5.4.
+(``answer``) and the generation service (``service``). Commit 5.4 adds citation
+resolution and the final response (``citations``) and the end-to-end demo
+(``demo``).
 
 Importing this package reads no credentials, creates no client and makes no
 network call. Retrieval never imports it.

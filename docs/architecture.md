@@ -8,9 +8,10 @@
 > selects BM25 on V2 (top 10) as the retrieval path for generation
 > ([retrieval_strategy.md](retrieval_strategy.md)), completing Stage 3.
 > Stage 4: Commits 5.1 (typed OpenAI provider layer), 5.2 (evidence context
-> and grounded prompt) and 5.3 (structured grounded generation with basic
-> reference checks, offline-verified) implemented; citation resolution
-> (5.4) is not implemented.
+> and grounded prompt), 5.3 (structured grounded generation) and 5.4
+> (citation resolution and final response) implemented. Stage 4 is complete
+> locally and verified offline; hosted-model behaviour has not been verified
+> live.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -23,7 +24,8 @@
 >   exact dense retrieval, RRF hybrid retrieval, the frozen retrieval
 >   policy);
 > - `founderlens.generation` (OpenAI provider layer, evidence context,
->   grounded prompt, structured answer schema and generation service).
+>   grounded prompt, structured answer schema, generation service, citation
+>   resolution and the end-to-end demo).
 >
 > Everything else below is the **planned** design and may change as
 > evaluation results come in.
@@ -1359,27 +1361,148 @@ timing and error categories. The controlled objects (`answer`, `prepared`,
   $env:FOUNDERLENS_RUN_LIVE_RAG_TESTS = "1"; python -m pytest tests/test_generation_service_live.py -q
   ```
 
-## Generation and citation interfaces (planned, Commit 5.4)
+## Citation resolution and grounded response (Commit 5.4)
 
-Indicative contracts, not yet implemented apart from retrieval, the provider,
-the context layer and structured generation:
+`founderlens.generation.citations` turns a `GenerationRunResult` into the
+final application response without any LLM call or network request.
+`founderlens.generation.demo` runs the whole path.
 
-- Retrieval: `load_policy_retriever(settings).search(question)` returns up to
-  ten `RetrievalResult`s (rank, raw BM25 score, original `ChunkRecord` with
-  text, document, page, offsets, company and fiscal period). Implemented in
-  Commit 4.3.
-- Provider: `OpenAIProvider(config).generate_structured(request, Schema)`.
-  Implemented in Commit 5.1.
+```text
+question -> PolicyRetriever (BM25 V2, top 10) -> prepare_generation_input
+         -> GroundedGenerationService (one structured call, or local abstention)
+         -> CitationResolver.resolve(run) -> GroundedResponse -> render()
+```
+
+**`CitationResolver(collection, manifest)`** is built from the policy
+retriever's verified V2 collection and the corpus manifest. `resolve(run)`
+then works as follows.
+
+1. **Re-parses the answer** from its JSON form through the strict
+   `GroundedAnswer` schema. A frozen model is not trusted as valid:
+   unvalidated `model_copy` / `model_construct` objects are caught, and a
+   failure raises `CitationResolutionError`.
+2. **Checks the run's internal consistency** (`CitationResolutionError`
+   lists every problem):
+   - the registry equals the evidence serialized into the request the
+     provider received;
+   - the question, request hash and committed prompt match;
+   - the answer schema ID is the current one;
+   - the run comes from this resolver's collection artifact;
+   - every registry chunk equals the trusted collection chunk;
+   - a `model` answer has a provider result whose parsed answer is this
+     answer, a matching configuration ID and `evidence_selected`
+     preparation;
+   - a `local` answer has no provider result or timing, a reason matching
+     its preparation status, and only the fixed local limitation.
+3. **Re-checks the response invariants** against the run's own registry
+   (`ResponseContractError`).
+4. **Resolves every cited ID** in that registry only. Missing, malformed or
+   excluded IDs are errors and are never dropped.
+   - Each cited document must be in the manifest.
+   - Its company, period, source URL and document hash must match the
+     manifest, and the URL must be HTTPS.
+   - URLs are not fetched.
+
+**Citation numbering** (`first_appearance_v1`):
+- Numbers start at 1, in order of first appearance, claim by claim and then
+  reference by reference.
+- A repeated evidence ID reuses its number; distinct chunks of one page get
+  distinct numbers.
+- Only cited evidence becomes a citation. Uncited model-visible evidence
+  stays in `response.run` and is listed by ID in the metadata.
+- Claim order and reference order never change.
+
+**Response contract** `debe65096147` (version 1). It hashes the answer
+schema ID, the numbering policy, the rendering format, the offset semantics
+and the field lists.
+
+```text
+GroundedResponse (frozen)
+  status            answered | partially_answered | insufficient_evidence
+  claims            tuple[CitedClaim]: position, claim_type, evidence_ids, citation_numbers, text
+  citations         tuple[ResolvedCitation]: number, evidence_id, chunk_id, document_id,
+                    document_title, company, reporting_period, page_id, page_number,
+                    source_url, start_char, end_char, retrieval_rank, retrieval_score, text
+  limitations       tuple[str]
+  origin            model | local
+  local_abstention_reason   empty_retrieval | no_evidence_fits | None
+  corpus_id, corpus_version, response_contract_id
+  run               the GenerationRunResult (prepared request, full registry, provider result)
+  identities() usage() timings() metadata() render() citation(number)
+```
+
+- **Citation sources:** every citation field comes from the trusted chunk
+  record or the manifest (the document title), never from model text.
+- **Offsets:** `start_char` / `end_char` are code-point offsets into the
+  page's normalized text, not PDF byte offsets or page coordinates.
+- **Insufficient evidence:** claims and citations are empty.
+- **Local abstentions:** they keep their reason, and `usage()` and the
+  provider timings are `None`.
+- **Errors:** provider, contract and resolution failures are raised, never
+  turned into responses.
+
+**Rendering** (`plain_text_v1`, deterministic):
+- `render()` lists each claim with an application-generated
+  `Sources: [n]` line, then the limitations, then one trusted `Sources` line
+  per citation (company, title, period, page, passage ID, evidence ID, URL).
+- Claim text and limitations are untrusted display data. In the text form
+  they appear as JSON string literals, so line breaks, fake `[n]` markers,
+  Markdown links or HTML inside them stay inside one quoted value and cannot
+  add a source.
+- The claim-to-number mapping in `claims` / `RenderedResponse.claims` is
+  authoritative. Claim text is never rewritten, merged or summarized, and no
+  second answer is generated.
+- Limitations are labelled as reported by the generator (naming the
+  provider, such as `openai` or `synthetic-demo`) or by the application for
+  local abstentions.
+- No HTML is produced, and the JSON quoting is not HTML sanitization. A
+  future web frontend must escape or sanitize claim, limitation and passage
+  text itself before display.
+
+**Privacy and the internal trace.**
+- `metadata()` and the resolver's log line carry statuses, counts, claim
+  types, citation numbers and provenance, identities, usage and timings.
+- They never include the question, claim, limitation, prompt or passage
+  text, and neither do `repr()` or exception messages. Full objects are
+  returned only to the caller.
+- `GroundedResponse.run` is the full internal generation trace: question,
+  exact prompt and serialized evidence, every model-visible passage, and the
+  provider's raw output text and IDs. It is for evaluation and debugging.
+- A `GroundedResponse` or its `run` must never be serialized directly into a
+  public API response; the future API needs an explicit response model with
+  chosen fields (not part of this commit).
+
+**Limits of these checks.** They are structural: every citation points to
+evidence the model was actually given. They do not show that the evidence
+supports the claim, that a number or calculation is correct, or that a run
+deliberately falsified by code in the same process would be detected (for
+example a whole prepared input swapped for another internally consistent
+one).
+
+**Demo:**
+- `python -m founderlens.generation.demo` (add `--show-passages` to print
+  cited passages) runs four scenarios through the full path on the real
+  corpus with a **synthetic scripted provider**: answered, partially
+  answered, insufficient evidence, and a local empty-retrieval abstention.
+- The synthetic answers are placeholders citing real evidence IDs and are
+  labelled SYNTHETIC. No model is called, no key is needed, and no usage is
+  reported.
+- `--live --question "..."` is the explicit opt-in for one paid request. It
+  needs `OPENAI_API_KEY`, disables SDK retries (`config_id` unchanged),
+  refuses a second request and sends up to ten public-source chunks with
+  `store=false`. It has not been run.
+
+## Generation interfaces (Stage 4, implemented)
+
+- Retrieval: `load_policy_retriever(settings).search(question)` (Commit 4.3).
+- Provider: `OpenAIProvider(config).generate_structured(request, Schema)`
+  (Commit 5.1).
 - Context: `prepare_generation_input(question, retriever, counter)` returns a
-  `PreparedGenerationInput` (request, evidence registry, budget, identities).
-  Implemented in Commit 5.2.
+  `PreparedGenerationInput` (Commit 5.2).
 - Generation: `GroundedGenerationService(retriever, counter, provider)
-  .answer(question)` returns a `GenerationRunResult` with a `GroundedAnswer`
-  whose evidence IDs exist in the request's registry. Implemented in Commit
-  5.3.
-- Citations: resolving each cited evidence ID to document, page and source
-  through the registry, plus response validation for display. Planned for
-  Commit 5.4.
+  .answer(question)` returns a `GenerationRunResult` (Commit 5.3).
+- Citations: `CitationResolver(collection, manifest).resolve(run)` returns a
+  `GroundedResponse` (Commit 5.4).
 
 The provider is passed in, so tests substitute a mocked transport or a
 fake `LLMProvider`.
@@ -1433,7 +1556,7 @@ pass.
 | `evaluation` *(schema, validation and retrieval benchmark implemented)* | Dataset schema and validation; page-level retrieval metrics and the dev-split benchmark, two-method and three-way with hybrid diagnostics (`metrics`, `benchmark`, see [retrieval_evaluation.md](retrieval_evaluation.md)); answer evaluation and judge planned | config, corpus manifest, retrieval |
 | `ingestion` *(implemented)* | Extract, normalize and table candidates, page-aware chunking | config, corpus, PyMuPDF |
 | `retrieval` *(BM25, embeddings, dense and hybrid implemented)* | Lexical tokenizer, BM25 baseline, result type, token audit, embedding artifacts, exact dense retrieval, RRF hybrid retrieval (done; hybrid evaluated on the dev split, Commit 4.2), frozen retrieval policy and generation-facing BM25 V2 entry point (Commit 4.3; no model needed) | config, ingestion chunks, rank-bm25, NumPy, sentence-transformers, PyTorch (dense and embeddings only) |
-| `generation` *(provider, context and structured generation implemented, Commits 5.1–5.3)* | OpenAI Responses provider, configuration, typed results and errors; evidence validation, token budgeting, evidence registry and grounded prompt v1; answer schema, response invariants, local abstention and the generation service (done); citation resolution planned (5.4) | openai, pydantic (provider); tiktoken, retrieval policy and types (context) |
+| `generation` *(implemented, Commits 5.1–5.4)* | OpenAI Responses provider, configuration, typed results and errors; evidence validation, token budgeting, evidence registry and grounded prompt v1; answer schema, response invariants, local abstention and the generation service; citation resolution, the final response contract, rendering and the demo | openai, pydantic (provider); tiktoken, retrieval policy and types (context) |
 | `evaluation` | Metrics, runner, reports | retrieval, generation |
 | `app` | Streamlit UI | generation |
 

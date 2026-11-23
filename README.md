@@ -6,7 +6,7 @@ page-level citations**, to reason across documents, and to **abstain** when the
 evidence is insufficient — with every claim about quality backed by a
 reproducible evaluation.
 
-> **Current status: Commits 3.1–3.4, 4.1–4.3 and 5.1–5.3.** Stages 1–3
+> **Current status: Commits 3.1–3.4, 4.1–4.3 and 5.1–5.4.** Stages 1–4
 > are complete: the project foundation, a verified four-document corpus, a
 > human-reviewed frozen evaluation dataset, page-aware extraction,
 > normalization and chunking, and retrieval. Implemented so far:
@@ -23,14 +23,15 @@ reproducible evaluation.
 > - Stage 4 has started: a typed OpenAI LLM provider layer (Commit 5.1),
 >   offline-tested only, and deterministic evidence-context and grounded
 >   prompt construction (Commit 5.2) over the frozen retrieval policy, and
->   a structured grounded generation service (Commit 5.3). That service is
->   verified offline with fake and mocked providers only. No live LLM call
->   has been made with retrieved evidence.
+>   a structured grounded generation service (Commit 5.3), and citation
+>   resolution into a final cited response (Commit 5.4). Stage 4 is
+>   complete locally and verified offline with synthetic, fake and mocked
+>   providers only. No live LLM call has been made with retrieved evidence.
 >
 > Retrieval quality is measured for BM25, dense and hybrid on the 19
 > answerable development questions only; the held-out split has not been
-> used. Citation resolution, answer evaluation, the demo UI and deployment
-> are **not implemented yet**. See
+> used. Answer evaluation, cross-document guardrails (Stage 5, next), the
+> demo UI and deployment are **not implemented yet**. See
 > [Implementation status](#implementation-status).
 
 This is a standalone portfolio project, separate from the larger FounderLens AI
@@ -182,6 +183,11 @@ python -m pytest tests/test_generation_service.py -q  # offline generation-servi
 $env:FOUNDERLENS_REAL_TOKENIZER = "1"; $env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_generation_service_real.py -q
 # Opt-in PAID live grounded-generation smoke (at most two requests, retries off); never run by CI
 $env:FOUNDERLENS_RUN_LIVE_RAG_TESTS = "1"; python -m pytest tests/test_generation_service_live.py -q
+python -m pytest tests/test_generation_citations.py -q  # offline citation tests, no key
+# End-to-end demo: question -> cited response; SYNTHETIC answers, no model call, offline
+python -m founderlens.generation.demo --show-passages
+# Opt-in PAID live demo: exactly one request, retries off (needs OPENAI_API_KEY)
+python -m founderlens.generation.demo --live --question "What revenue did NVIDIA report for its Data Center business in the fourth quarter of fiscal 2025?"
 $env:FOUNDERLENS_REAL_TOKENIZER = "1"; $env:FOUNDERLENS_REAL_CORPUS = "1"; python -m pytest tests/test_generation_context_real.py -q
 # Opt-in PAID live smoke test (two tiny calls, synthetic text); never run by CI
 $env:FOUNDERLENS_RUN_LIVE_LLM_TESTS = "1"; python -m pytest tests/test_generation_openai_live.py -q
@@ -545,8 +551,38 @@ and makes no paid calls; the live LLM test is skipped unless
   paid requests) exists but has not been run, so no live model call has been
   made yet.
 
-**Not implemented:** citation resolution and rendering, claim-support
-verification, answer-level evaluation and the judge, the Streamlit demo,
+**Implemented (Commit 5.4), see [docs/architecture.md](docs/architecture.md#citation-resolution-and-grounded-response-commit-54):**
+- `CitationResolver(collection, manifest).resolve(run)` returns a frozen
+  `GroundedResponse` (contract `debe65096147`). It contains:
+  - status;
+  - ordered claims with application citation numbers;
+  - resolved citations (passage text, document title, company, period, page,
+    source URL, normalized-text offsets, rank and score, all from trusted
+    data);
+  - limitations;
+  - origin and abstention reason;
+  - identities, provider usage and timings;
+  - the full generation trace.
+- Before resolving, it re-parses the answer through the strict schema and
+  re-checks the invariants and the run's consistency. Cited IDs are
+  resolved only in that run's registry; unknown or excluded IDs are
+  errors, never dropped.
+- Citations are numbered by first appearance and reused for repeated
+  evidence. Only cited evidence is listed; uncited evidence stays in the
+  trace.
+- `render()` gives deterministic plain text. Claim text and limitations
+  appear as quoted untrusted strings, so fake markers or links in them cannot
+  add sources. The structured claim-to-citation mapping is authoritative.
+- These checks are structural, not semantic. The demo uses synthetic answers;
+  the live demo and live tests have not been run.
+- `GroundedResponse.run` is the full internal trace (question, prompt,
+  evidence passages, raw output). Never serialize it into a public API
+  response; the future API needs an explicit response model.
+- The plain-text quoting is not HTML sanitization: a web frontend must
+  escape display text itself.
+
+**Not implemented:** claim-support verification, answer-level evaluation
+and the judge, cross-document guardrails (Stage 5), the Streamlit demo,
 deployment. No live grounded generation and no held-out results exist.
 
 ## Roadmap
@@ -554,8 +590,8 @@ deployment. No live grounded generation and no held-out results exist.
 1. Project Foundation & Dataset — *complete; benchmark frozen*
 2. Document Ingestion Pipeline
 3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
-4. Grounded RAG Generation — *in progress (5.1 provider, 5.2 context, 5.3 structured generation)*
-5. Cross-Document Reasoning & Guardrails
+4. Grounded RAG Generation — *complete locally (5.1–5.4, offline-verified; live behaviour unverified)*
+5. Cross-Document Reasoning & Guardrails — *next*
 6. RAG Evaluation & Benchmarking
 7. Streamlit Interactive Demo
 8. Testing, Deployment & Documentation

@@ -8,8 +8,8 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 1 | Project Foundation & Dataset | Complete; evaluation dataset human-reviewed and frozen |
 | 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
-| 4 | Grounded RAG Generation | In progress (Commits 5.1 provider, 5.2 evidence context and 5.3 structured generation implemented; citation resolution not implemented; no live generation verified) |
-| 5 | Cross-Document Reasoning & Guardrails | Planned |
+| 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
+| 5 | Cross-Document Reasoning & Guardrails | Next milestone (planned) |
 | 6 | RAG Evaluation & Benchmarking | Planned |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
@@ -199,10 +199,25 @@ part of this stage. Commits:
   *(implemented; offline-verified with fake and mocked providers; the live
   smoke `tests/test_generation_service_live.py` exists but has not been run;
   answer quality unmeasured)*
-- Commit 5.4: citation and response validation. *(planned)*
+- Commit 5.4: citation and response validation.
+  - `CitationResolver` re-parses each answer and checks the run's
+    consistency (registry against request, origin against provider result,
+    collection and manifest provenance).
+  - It resolves cited IDs only within the run's own registry, numbers
+    citations by first appearance, and returns a frozen `GroundedResponse`
+    (contract `debe65096147`) with trusted citations and deterministic
+    plain-text rendering.
+  - Offline demo with a synthetic provider, and an opt-in single-request
+    live demo
+    ([architecture.md](architecture.md#citation-resolution-and-grounded-response-commit-54)).
+  *(implemented; offline-verified; live demo and live tests not run)*
 
 **Acceptance criteria.** Every citation refers to a retrieved chunk; tests mock
-the API client; no key needed for the test suite.
+the API client; no key needed for the test suite. *(met locally and offline:
+citations resolve only to the run's registry of retrieved, model-visible
+chunks; provider tests use a mocked transport or fake provider; the default
+suite needs no key. Hosted-model behaviour, answer quality and live token
+usage remain unverified; remote CI not verified.)*
 
 ## Stage 5 — Cross-Document Reasoning & Guardrails
 
