@@ -19,8 +19,9 @@
 > (the v1.2 pilot `live-20261123T111430692539Z-8665d379` is incomplete:
 > 23 of 24 completed, one `response_contract` failure; not reportable;
 > the v1.3 live run `live-20261124T045739024562Z-8665d379` is
-> execution-complete and reportable). Commit 6.4 is deferred; Stage 6 is
-> planned.
+> execution-complete and reportable). Commit 6.4 is deferred. Stage 6 is in
+> progress: Commit 7.1 adds rubric v1, judgment contracts and verified judging
+> input (no labels or scores yet).
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -1948,6 +1949,30 @@ state `execution_complete`, reportable with model-output failures counted.
   n = 2 and unanswerable n = 5. No held-out data was used.
 - The v1.2 pilot `live-20261123T111430692539Z-8665d379` (23 of 24 valid, one `response_contract` failure)
   remains incomplete and not reportable; it predates the run log.
+
+## Formal judging contracts (Stage 6, Commit 7.1)
+
+`founderlens.evaluation.judgments` defines rubric v1 (`rubric_id` `e8b840e4f4af`)
+and the typed judgment contract (protocol §15): eight dimensions with their
+allowed units and labels, `not_assessable` with a mandatory reason, evidence
+and reference-basis requirements, source-specific provenance (human, judge or
+deterministic) and the calibration/evaluation role. Units are stable
+identifiers over the generator's claims, citations, required facts, claim
+aspects, claim values and answers. `ClaimDecomposition` splits a compound
+claim into hash-pinned spans of its original text; `derive_faithfulness`
+never marks a partly supported claim as supported. Evidence references are
+code-point spans of frozen V2 chunks pinned by `span_sha256`.
+
+`founderlens.evaluation.judging_input` verifies a frozen live run as judging
+input without regenerating or retrieving anything (report, run log, sealed
+records, identities, dataset hashes, answer invariants, citation and evidence
+associations, V2 chunk identity), keeps model-output failures ineligible, and
+binds a judgment to the verified run (`check_judgment`: question, record
+digest, claim, citation, fact and evidence spans). `python -m
+founderlens.evaluation.judging_input --run <run_id>` prints a public summary
+(identifiers and counts). For `live-20261124T045739024562Z-8665d379`: 24 outcomes, 22 eligible
+answers (36 claims, 33 citations), 2 ineligible model-output failures
+(`dev-016`, `dev-021`). No judgment, label or score exists yet.
 
 ## Generation interfaces (Stage 4, implemented)
 

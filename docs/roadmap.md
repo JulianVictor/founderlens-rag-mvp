@@ -10,7 +10,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
 | 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
 | 5 | Cross-Document Reasoning & Guardrails | Complete (diagnostic acceptance; Commits 6.1–6.3; 6.4 deferred) |
-| 6 | RAG Evaluation & Benchmarking | Planned |
+| 6 | RAG Evaluation & Benchmarking | In progress (Commit 7.1 rubric and judgment contracts) |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
 
@@ -341,6 +341,20 @@ latency, token and cost capture; versioned reports in `reports/`.
 agreement with human labels is measured on the predefined development
 calibration set before its scores are reported; the held-out split is
 evaluated only after development tuning is frozen.
+
+Commits:
+- Commit 7.1: protocol v1.4 §15, rubric v1 (`rubric_id` `e8b840e4f4af`), typed judgment contracts (units, labels,
+  `not_assessable` reasons, evidence spans, provenance, compound-claim
+  decompositions) and the verified-input gate over the frozen baseline
+  `live-20261124T045739024562Z-8665d379` (24 outcomes, 22 eligible answers, 2
+  model-output failures ineligible). *(implemented; offline; no labels or
+  scores)*
+- Commit 7.2: deterministic financial checks. *(planned)*
+- Commit 7.3: annotation packets, human-label import, calibration set. *(planned)*
+- Commit 7.4: agreement statistics. *(planned)*
+- Commit 7.5: frozen judge configuration and mocked judge workflow. *(planned)*
+- Commits 7.6–7.8: authorized calibration and evaluation runs, reporting,
+  regression procedures. *(planned; paid steps need explicit authorization)*
 
 ## Stage 7 — Streamlit Interactive Demo
 

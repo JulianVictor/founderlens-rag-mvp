@@ -1,16 +1,19 @@
 # Evaluation Protocol
 
-> **Status: protocol v1.3.** It defines *how* the system will be evaluated.
-> One authorized live diagnostic pilot has been run under v1.2 and is
-> incomplete (`live-20261123T111430692539Z-8665d379`); development-split retrieval results
+> **Status: protocol v1.4.** It defines *how* the system will be evaluated.
+> Stage 5 diagnostic acceptance is complete: the reportable v1.3 live run
+> `live-20261124T045739024562Z-8665d379` is the frozen generation baseline (the v1.2
+> pilot `live-20261123T111430692539Z-8665d379` remains incomplete). Development-split retrieval results
 > are in [`retrieval_evaluation.md`](retrieval_evaluation.md). The question set
 > (dataset v1.0.0) has been **reviewed by the project owner**, who accepted all
 > 40 annotations without corrections, and is **frozen** (see
 > [`evaluation/README.md`](../evaluation/README.md)). v1.1 states the retrieval
 > metric definitions exactly (§3) and adds the benchmark freeze (§10). v1.2
 > adds a narrowly scoped Stage 5 diagnostic amendment (§13). v1.3 adds
-> prospective execution-complete reporting (§14). The formal
-> evaluation harness, including the LLM judge, is implemented in Stage 6.
+> prospective execution-complete reporting (§14). v1.4 adds the formal
+> judging rubric and contracts (§15); the judge, human labels and scoring
+> are implemented in later Stage 6 commits. No formal answer-quality result
+> exists yet.
 
 ## 1. Inputs
 
@@ -659,3 +662,98 @@ captured evidence provenance carried from the digest-checked source record.
 No new usage or provider attempt is recorded (the original usage stays in
 `replay_of`), so the replay reports the same completion state, reliability
 and retrieval metrics as its source.
+
+
+## 15. Formal judging amendment (v1.4)
+
+**Scope.** v1.4 defines formal judging of frozen generation outputs: the
+units, the rubric, admissible evidence, label provenance and the calibration
+requirement. It adds no generation semantics: input records keep the
+generation protocol they ran under (the Stage 5 baseline `live-20261124T045739024562Z-8665d379` stays a
+protocol 1.3 generation run and is never relabelled as v1.4). Commit 7.1 defines
+the contracts only; no human label, judge score or deterministic score exists
+yet.
+
+**Admissible input.** A run is admissible only if it verifies completely
+(`founderlens.evaluation.judging_input`): live origin, generation protocol
+1.3, an accepted completion state, reportable, the generation commit on a
+clean tree, matching preregistration and finish entries in the run log, the
+frozen identities, dataset hashes, sealed schema-3 records accounting for every
+scheduled question exactly once, stored answers that revalidate against the
+existing response invariants, citations that match the selected evidence, and
+selected evidence that resolves by chunk identity to the frozen V2 artifact.
+Nothing is regenerated or retrieved again. Valid answers and local
+abstentions are eligible; model-output failures stay reliability outcomes,
+are ineligible for semantic judgment, receive no claims or judgments, and are
+never treated as abstentions.
+
+**Units.** The generator's structured claims are the primary units, addressed
+by stable one-based claim positions. Units: claim; subclaim (a span of a
+versioned decomposition); claim × citation; required fact; claim × aspect
+(attribution); claim value × aspect (numbers); answer. A compound claim is
+either judged `not_assessable` with `claim_not_atomic`, or decomposed by a
+human or a named deterministic rule into character spans of the original
+claim text, pinned by its hash (never paraphrased, never segmented by an
+LLM); a decomposed claim is supported only if every one of its subclaims is
+labelled supported (a missing or `not_assessable` subclaim makes it
+`not_assessable`), and a subclaim judgment binds only through its registered,
+content-addressed decomposition of the same question, record and claim.
+
+**Rubric v1** (`rubric_id` `e8b840e4f4af`, content-addressed):
+
+| Dimension | Unit | Labels |
+|---|---|---|
+| claim faithfulness: supported by the exact context the generator received? | claim, subclaim | supported, unsupported, contradicted |
+| citation support: does *this* cited record support the claim? | claim × citation | supports, partially_supports, does_not_support |
+| factual correctness against verified reference | required fact | correct, incorrect, missing |
+| financial attribution (company, reporting period, GAAP/non-GAAP basis) | claim × aspect | correct, incorrect, unverified, not_applicable |
+| financial numerical correctness (value, unit and scale, currency, period, calculated comparison, basis) | claim value × aspect | correct, incorrect, unverified, not_applicable |
+| answer completeness against the required facts (not length) | answer | complete, partial, none |
+| abstention appropriateness, with separate evidence sufficiency (`retrieved_sufficient` / `retrieved_insufficient` / `unknown`) | answer | correct_abstention, correct_attempt, false_abstention, missed_abstention |
+| answer relevance (ordinal 2/1/0; diagnostic only) | answer | directly_answers, partially_relevant, off_topic |
+
+Every dimension also allows `not_assessable`, which requires exactly one
+reason (`claim_not_atomic`, `evidence_unreadable`, `evidence_missing`,
+`reference_ambiguous`, `reference_unavailable`, `outside_rubric_scope`,
+`annotator_uncertain`); a substantive label never carries one. Citation
+support is not factual correctness; an `insufficient_evidence` status is not
+automatically a correct abstention; corpus answerability comes from the frozen
+dataset label, evidence sufficiency from what retrieval actually supplied; a
+document's primary reporting period does not describe every value on its
+pages.
+
+**Evidence.** References are spans `[start, end)` of the exact stored text of
+a frozen V2 chunk, in Unicode code points with no re-normalization, starting
+and ending on base characters, pinned by `span_sha256` and the collection
+artifact hash; text is never copied into a reference. Faithfulness evidence
+comes from the selected context (with its evidence ID); citation-support
+evidence only from the one cited chunk; factual and numerical correctness
+rest on the structured reference fact or human-verified source spans, never on
+unsupported judge recollection.
+
+Every reference declares its **kind**: `selected_context` (a chunk the
+generator received; names its evidence ID), `cited` (a chunk the judged claim
+actually cites; names its evidence ID) or `reference_source` (a
+human-verified span of any frozen chunk; no evidence ID). Faithfulness accepts
+selected-context or cited spans, citation support only cited spans, and the
+correctness dimensions any kind. A reference-source span is never presented as
+retrieved or cited. **Trust limits (for Commit 7.3):** binding proves only
+that a reference-source span exists verbatim in the frozen corpus; that it is
+relevant and actually supports the fact is the annotator's assertion, made by
+a single owner-annotator, and must be reviewed during calibration.
+
+**Provenance.** Every judgment names its source: `human` (pseudonymous
+annotator ID), `judge` (judge configuration ID) or `deterministic` (check ID),
+its role (`calibration` or `evaluation`) and the rubric ID. Schema validity is
+not correctness: a well-formed judgment can be wrong.
+
+**Calibration versus evaluation.** Judgments made on calibration items
+(§8) measure or tune agreement and are not independent evidence of quality.
+Judge scores become headline results only for dimensions that meet the §8
+agreement target on the human-labelled calibration set; development results
+are never independent of that calibration. The held-out split stays closed
+until a separately approved final-evaluation protocol.
+
+**Privacy.** Detailed inputs and judgments (answer text, evidence spans,
+human labels) are private, git-ignored artifacts. Public outputs hold only
+identifiers, codes, counts and rubric identities.
