@@ -11,7 +11,8 @@
 > metric definitions exactly (§3) and adds the benchmark freeze (§10). v1.2
 > adds a narrowly scoped Stage 5 diagnostic amendment (§13). v1.3 adds
 > prospective execution-complete reporting (§14). v1.4 adds the formal
-> judging rubric and contracts (§15); the judge, human labels and scoring
+> judging rubric and contracts (§15) and deterministic financial checks
+> (§16); the judge, human labels and scoring
 > are implemented in later Stage 6 commits. No formal answer-quality result
 > exists yet.
 
@@ -757,3 +758,91 @@ until a separately approved final-evaluation protocol.
 **Privacy.** Detailed inputs and judgments (answer text, evidence spans,
 human labels) are private, git-ignored artifacts. Public outputs hold only
 identifiers, codes, counts and rubric identities.
+
+
+## 16. Deterministic financial checks (v1.4, Commit 7.2)
+
+`founderlens.evaluation.financial_checks` (extractor `c6956d52681f`, checker
+`b86609c129e6`; rubric v1 unchanged) supplies the `deterministic` source of
+§15 for the numerical-correctness dimension. Both identities are hashes of
+their full normative definitions: any change to parsing, conversions,
+precision or comparison rules changes them.
+
+**What it establishes.** That a stated number, read exactly, equals or
+correctly rounds a *verified reference fact* explicitly associated with it;
+that its unit kind, currency and the claim's own stated company, segment and
+period agree with that fact; and that a declared calculation is
+arithmetically valid. **What it cannot establish.** That a number is correct
+merely because it also appears in a passage; which metric a claim value
+expresses (the associator asserts it); the accounting basis (keywords are a
+signal only); anything about values with no explicit association. Those are
+human-annotation (Commit 7.3) and judge work.
+
+**Extraction (extractor v1).** Every maximal numeric token not embedded in an
+alphanumeric identifier (`FY2025`, `Q4`, `E01`) gets a `value_index`, 1-based
+by start offset, including non-financial tokens, with a code-point span of
+the original claim text, which is never modified. Tokens inside periods,
+dates or unresolved references found by the frozen scope analyzer are
+`period_reference`; page markers `page_reference`; ranges `ambiguous`; bare
+years `year`; numbers without unit, currency or scale `unitless_number`.
+Supported: thousands separators, decimals, `$`, `US$`, `USD`, `€`, `£`,
+thousand/million/billion/trillion (single letters only when attached),
+percent, percentage points, basis points (as percentage points / 100),
+multiples (`2.5x`), explicit minus signs. Attached units (`26.3billion`) are
+parsed and flagged. Parentheses are sign-ambiguous (prose aside or
+accounting negative) and never match on sign. `$` alone is
+`dollar_sign_unqualified`: no currency is inferred.
+
+**Values and rounding.** All arithmetic is `Decimal`. Values are compared in
+base units (`$35,600 million` equals `$35.6 billion`). Percent, percentage
+points, ratios and money never convert into each other. There is no global
+tolerance: a claim coarser than the verified value matches (`rounding_match`)
+only if the verified value rounded half-up to the claim's stated precision
+equals it and the claim has at least two significant digits; a value that does
+not round to the claim is a `mismatch` at any precision; a claim finer than the
+reference that rounds back to it is `ambiguous`; an unsigned claim against a
+signed fact of the same magnitude is `ambiguous`.
+
+**Reference facts and association.** A `VerifiedReferenceFact` (metric,
+company, segment, period with fiscal/calendar basis, value with unit and
+currency, accounting basis) requires trusted evidence and a named verifier;
+none is created automatically, and none exists yet for the real development
+data. A `FactAssociation` binds one claim occurrence (question, record
+digest, claim position, value index and span) to one fact and the metric the
+associator asserts, by a named person. Equal numbers are never linked
+automatically. Without an association a value is `unverified`.
+
+**Attribution.** Company and segment come only from what the claim states
+(frozen vocabulary): unstated is `unverified`, several companies `ambiguous`,
+a segment against a consolidated fact a `mismatch`. A reporting period comes
+only from the claim, never from the source document; fiscal and calendar
+periods are never equated (`ambiguous`). A different stated metric is a
+`mismatch` even when the number is right.
+
+**Calculations.** Only an explicitly declared formula (absolute difference,
+percent change, relative change, percentage-point difference) over verified
+facts is checked. Mathematical validity (from operands the claim states) is
+reported separately from factual correctness (from verified facts);
+arithmetic on operands the facts contradict, or with an arithmetic error,
+never passes. Division by zero and incompatible operands are `ambiguous`; no
+formula is inferred from wording.
+
+**Outcomes and judgments.** `exact_match`, `rounding_match`, `mismatch`,
+`ambiguous`, `unverified`, `not_applicable`. A value passes overall only if
+every applicable aspect passes. Only results for an explicit association to a
+verified fact with evidence become `numerical_correctness` judgments (source
+`deterministic`, check ID `fin.<checker>.<aspect>`, reference basis
+`reference_fact`): exact or rounding match maps to `correct`, mismatch to
+`incorrect`, ambiguous or unverified to `unverified`. Company, segment and
+metric results stay diagnostics. Each judgment covers exactly its own aspect;
+when the claim's stated metric, company or segment contradicts the associated
+fact, that fact does not describe the claim and no aspect is judged `correct` or
+`incorrect` against it (`unverified`). Associations are validated (dev question
+ID, record digest, positive position and index, ordered span, named associator).
+No human label and no answer-level score is produced.
+
+**Baseline smoke** (read-only, `live-20261124T045739024562Z-8665d379`): 24 outcomes, 22 eligible,
+`dev-016` and `dev-021` ineligible; 30 of 36 claims hold 74 indexed numeric
+occurrences (27 financial quantities, 47 period references); every financial
+value is `unverified` (`no_verified_association`); 0 judgments created. This
+says nothing about financial accuracy.

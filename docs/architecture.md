@@ -1974,6 +1974,24 @@ founderlens.evaluation.judging_input --run <run_id>` prints a public summary
 answers (36 claims, 33 citations), 2 ineligible model-output failures
 (`dev-016`, `dev-021`). No judgment, label or score exists yet.
 
+## Deterministic financial checks (Stage 6, Commit 7.2)
+
+`founderlens.evaluation.financial_checks` (protocol §16; extractor
+`c6956d52681f`, checker `b86609c129e6`) extracts numeric occurrences of a claim with
+stable 1-based `value_index`es and original-text spans, classifies
+non-financial numbers (periods via the frozen scope analyzer, pages, ranges,
+years), and represents stated values as `Decimal` quantities with unit kind,
+scale, currency marker, sign and stated precision. `check_value` compares one
+value with an explicitly associated `VerifiedReferenceFact` per aspect (value,
+unit and scale, currency, metric, company, segment, period, basis);
+`check_calculation` checks declared formulas, separating mathematical
+validity from factual correctness; `to_judgment` maps only associated,
+evidenced results to deterministic `numerical_correctness` judgments. It does
+not reuse the guardrail numeric trace, which belongs to the frozen guardrail
+policy. `python -m founderlens.evaluation.financial_checks --run <run_id>`
+prints a read-only, text-free summary; for `live-20261124T045739024562Z-8665d379` every financial value is
+unverified and no judgment is created.
+
 ## Generation interfaces (Stage 4, implemented)
 
 - Retrieval: `load_policy_retriever(settings).search(question)` (Commit 4.3).
