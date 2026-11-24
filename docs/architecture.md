@@ -11,12 +11,16 @@
 > and grounded prompt), 5.3 (structured grounded generation) and 5.4
 > (citation resolution and final response) implemented. Stage 4 is complete
 > locally and verified offline; hosted-model behaviour has not been
-> verified beyond one owner-reported manual live demo. Stage 5 (in progress):
+> verified beyond one owner-reported manual live demo. Stage 5 (complete,
+> diagnostic acceptance):
 > Commit 6.1 adds diagnostic corpus scope and evidence coverage analysis;
 > Commit 6.2 adds deterministic, diagnostic-only response guardrails;
 > Commit 6.3 adds the development-split diagnostic evaluation harness
-> (offline-verified; one authorized live run, `live-20261123T111430692539Z-8665d379`, is incomplete:
-> 23 of 24 completed, one `response_contract` failure; not reportable).
+> (the v1.2 pilot `live-20261123T111430692539Z-8665d379` is incomplete:
+> 23 of 24 completed, one `response_contract` failure; not reportable;
+> the v1.3 live run `live-20261124T045739024562Z-8665d379` is
+> execution-complete and reportable). Commit 6.4 is deferred; Stage 6 is
+> planned.
 > Implemented:
 > - `founderlens.config` and the `python -m founderlens` entry point;
 > - `founderlens.corpus` (manifest, acquisition, integrity validation);
@@ -1902,6 +1906,48 @@ corpus, SYNTHETIC answers): 24 of 24 questions completed, 24 provider
 attempts (no local abstention), 0 citation invariant violations, run complete;
 the replay of that run completed 24 of 24 with 0 provider attempts. These are
 pipeline checks, not measurements of model behaviour.
+
+**Stage 5 diagnostic results** (`evaluation_kind: diagnostic_deterministic`,
+protocol v1.3 §14). Run `live-20261124T045739024562Z-8665d379`: real live inference, pre-registered at commit
+`7c63bbc` on a clean working tree, frozen identities unchanged, completion
+state `execution_complete`, reportable with model-output failures counted.
+
+> These diagnostics do not establish answer correctness, faithfulness,
+> claim-level citation support or semantic abstention appropriateness. Formal
+> evaluation remains pending Stage 6.
+
+| Overall | Result |
+|---|---|
+| Scheduled questions / attempted provider requests | 24 / 24 |
+| Contract-valid outcomes | 22/24 |
+| Model-output failures | 2/24, both `answer_validation` / `answered_has_limitations` (`dev-016`, `dev-021`) |
+| Selected-evidence page recall (answerable, recorded evidence) | 19/19 |
+| Selected complete multi-fact coverage | 12/14 |
+| Cited-evidence page recall (valid answer attempts) | 15/16 |
+| Cited complete multi-fact coverage (valid answer attempts) | 11/13 (1 excluded: model-output failure) |
+| Accepted-page citation overlap (distinct cited pages) | 24/30 (1 question excluded: model-output failure) |
+| Provider usage (24/24 requests recorded) | 69,777 input, 2,985 output tokens |
+
+| Category | Scheduled | Valid outcomes | Model-output failures | Valid statuses | Selected complete coverage | Cited complete coverage | Accepted-page overlap |
+|---|---|---|---|---|---|---|---|
+| single_doc_factual | 7 | 7 | 0 | 5 answered, 2 insufficient_evidence | 2/2 | 2/2 | 6/7 |
+| single_doc_conceptual | 5 | 5 | 0 | 5 answered | 5/5 | 5/5 | 8/10 |
+| cross_doc_comparison | 5 | 4 | 1 (`dev-016`) | 4 answered | 4/5 | 3/4 | 7/9 |
+| temporal_multi_evidence (counts only) | 2 | 2 | 0 | 1 answered, 1 partially_answered | 1/2 | 1/2 | 3/4 |
+| unanswerable | 5 | 4 | 1 (`dev-021`) | 1 answered, 3 insufficient_evidence | n/a | n/a | n/a |
+
+- Unanswerable, unconditional over all 5 scheduled: 3 abstentions, 1
+  answered, 0 partially answered, 1 model-output failure (operational flags,
+  not judged abstention appropriateness).
+- Answerable, unconditional over all 19 scheduled: 16 valid answer
+  attempts, 2 abstentions, 1 model-output failure.
+- Guardrails: 0 of 22 valid answers carry a warning; all findings are notices.
+- Contract validity, accepted-page overlap and structural citation validity
+  are not factual correctness, faithfulness or semantic citation support.
+- Small sample: 24 development questions, one sample per question; temporal
+  n = 2 and unanswerable n = 5. No held-out data was used.
+- The v1.2 pilot `live-20261123T111430692539Z-8665d379` (23 of 24 valid, one `response_contract` failure)
+  remains incomplete and not reportable; it predates the run log.
 
 ## Generation interfaces (Stage 4, implemented)
 

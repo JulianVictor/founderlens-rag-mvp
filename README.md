@@ -28,11 +28,14 @@ reproducible evaluation.
 >   complete locally and verified offline with synthetic, fake and mocked
 >   providers. The project owner reports one successful manual live demo
 >   (one request); that is a functional smoke test, not a benchmark.
-> - Stage 5 is in progress: diagnostic corpus scope and evidence coverage
->   analysis (Commit 6.1), diagnostic response guardrails (Commit 6.2) and
->   a development-split diagnostic evaluation harness (Commit 6.3,
->   offline-verified; one authorized live run was incomplete and is not
->   reportable), with no behaviour change.
+> - Stage 5 is complete (diagnostic acceptance): corpus scope analysis
+>   (Commit 6.1), diagnostic response guardrails (Commit 6.2) and a
+>   development-split diagnostic evaluation (Commit 6.3), with no
+>   behaviour change. The reportable v1.3 live run
+>   `live-20261124T045739024562Z-8665d379` had 22/24 contract-valid outcomes
+>   and 2 counted model-output failures; these are
+>   `diagnostic_deterministic` results, not answer quality. Commit 6.4 is
+>   deferred, and Stage 6 (formal evaluation) is planned.
 >
 > Retrieval quality is measured for BM25, dense and hybrid on the 19
 > answerable development questions only; the held-out split has not been
@@ -663,9 +666,11 @@ and makes no paid calls; the live LLM test is skipped unless
   Stage 6; later development-set tuning must be labelled post-tuning.
 - A paid run is never automatic: it needs `--live`,
   `FOUNDERLENS_RUN_PAID_EVAL=1`, an explicit `--max-requests` (at most 24),
-  a clean Git tree, the frozen identities and credentials. One authorized
-  live run (`live-20261123T111430692539Z-8665d379`) attempted 24 requests and completed 23; one
-  `response_contract` failure makes it incomplete and **not reportable**.
+  a clean Git tree, the frozen identities and credentials. The v1.2 pilot
+  (`live-20261123T111430692539Z-8665d379`) attempted 24 requests and completed 23; one
+  `response_contract` failure keeps it incomplete and **not reportable**.
+  The first v1.3 live run (`live-20261124T045739024562Z-8665d379`) is
+  execution-complete and reportable (results below).
 - Failed questions keep safe diagnostics (record schema 2): stage, invariant
   codes with positions, the provider request ID and, for a rejected answer,
   its provider-reported usage. A rejected answer's text is never stored, and
@@ -683,6 +688,58 @@ and makes no paid calls; the live LLM test is skipped unless
   pre-registered execution-complete live run, logged in
   `reports/generation_eval/run_log.jsonl`. The v1.2 pilot stays incomplete.
 
+**Stage 5 diagnostic results (accepted)** (`evaluation_kind: diagnostic_deterministic`,
+protocol v1.3 §14). Run `live-20261124T045739024562Z-8665d379`: real live inference, pre-registered at commit
+`7c63bbc` on a clean working tree, frozen identities unchanged, completion
+state `execution_complete`, reportable with model-output failures counted.
+
+> These diagnostics do not establish answer correctness, faithfulness,
+> claim-level citation support or semantic abstention appropriateness. Formal
+> evaluation remains pending Stage 6.
+
+| Overall | Result |
+|---|---|
+| Scheduled questions / attempted provider requests | 24 / 24 |
+| Contract-valid outcomes | 22/24 |
+| Model-output failures | 2/24, both `answer_validation` / `answered_has_limitations` (`dev-016`, `dev-021`) |
+| Selected-evidence page recall (answerable, recorded evidence) | 19/19 |
+| Selected complete multi-fact coverage | 12/14 |
+| Cited-evidence page recall (valid answer attempts) | 15/16 |
+| Cited complete multi-fact coverage (valid answer attempts) | 11/13 (1 excluded: model-output failure) |
+| Accepted-page citation overlap (distinct cited pages) | 24/30 (1 question excluded: model-output failure) |
+| Provider usage (24/24 requests recorded) | 69,777 input, 2,985 output tokens |
+
+| Category | Scheduled | Valid outcomes | Model-output failures | Valid statuses | Selected complete coverage | Cited complete coverage | Accepted-page overlap |
+|---|---|---|---|---|---|---|---|
+| single_doc_factual | 7 | 7 | 0 | 5 answered, 2 insufficient_evidence | 2/2 | 2/2 | 6/7 |
+| single_doc_conceptual | 5 | 5 | 0 | 5 answered | 5/5 | 5/5 | 8/10 |
+| cross_doc_comparison | 5 | 4 | 1 (`dev-016`) | 4 answered | 4/5 | 3/4 | 7/9 |
+| temporal_multi_evidence (counts only) | 2 | 2 | 0 | 1 answered, 1 partially_answered | 1/2 | 1/2 | 3/4 |
+| unanswerable | 5 | 4 | 1 (`dev-021`) | 1 answered, 3 insufficient_evidence | n/a | n/a | n/a |
+
+- Unanswerable, unconditional over all 5 scheduled: 3 abstentions, 1
+  answered, 0 partially answered, 1 model-output failure (operational flags,
+  not judged abstention appropriateness).
+- Answerable, unconditional over all 19 scheduled: 16 valid answer
+  attempts, 2 abstentions, 1 model-output failure.
+- Guardrails: 0 of 22 valid answers carry a warning; all findings are notices.
+- Contract validity, accepted-page overlap and structural citation validity
+  are not factual correctness, faithfulness or semantic citation support.
+- Small sample: 24 development questions, one sample per question; temporal
+  n = 2 and unanswerable n = 5. No held-out data was used.
+- The v1.2 pilot `live-20261123T111430692539Z-8665d379` (23 of 24 valid, one `response_contract` failure)
+  remains incomplete and not reportable; it predates the run log.
+
+- **Commit 6.4:** **deliberately deferred.** The frozen baseline has known
+  retrieval and generation limitations (for example the missing-company
+  selection behind `dev-016`), but deterministic diagnostics do not establish
+  semantic answer correctness. Stage 6 first evaluates factual accuracy,
+  faithfulness, numerical correctness, claim support and abstention
+  appropriateness on the unchanged baseline. Any later retrieval, prompt or
+  generation change must be versioned and labelled development-informed
+  tuning. Stage 5 did not change the retrieval strategy or the generation
+  prompt.
+
 **Not implemented:** guardrail enforcement, claim-support
 verification, answer-level evaluation and the judge, the Streamlit demo,
 deployment. No formal live evaluation and no held-out results exist.
@@ -693,8 +750,8 @@ deployment. No formal live evaluation and no held-out results exist.
 2. Document Ingestion Pipeline
 3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
 4. Grounded RAG Generation — *complete locally (5.1–5.4, offline-verified; live behaviour unverified)*
-5. Cross-Document Reasoning & Guardrails — *in progress (6.1 scope diagnostics, 6.2 diagnostic response checks, 6.3 diagnostic evaluation harness)*
-6. RAG Evaluation & Benchmarking
+5. Cross-Document Reasoning & Guardrails — *complete (diagnostic acceptance; 6.1–6.3; 6.4 deferred)*
+6. RAG Evaluation & Benchmarking — *planned (formal judged evaluation)*
 7. Streamlit Interactive Demo
 8. Testing, Deployment & Documentation
 

@@ -9,7 +9,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 2 | Document Ingestion Pipeline | Implemented (Commits 2.1–2.3) |
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
 | 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
-| 5 | Cross-Document Reasoning & Guardrails | In progress (Commits 6.1 scope diagnostics and 6.2 response checks implemented) |
+| 5 | Cross-Document Reasoning & Guardrails | Complete (diagnostic acceptance; Commits 6.1–6.3; 6.4 deferred) |
 | 6 | RAG Evaluation & Benchmarking | Planned |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
@@ -225,7 +225,10 @@ usage remain unverified; remote CI not verified.)*
 
 **Deliverables.** Retrieval and prompting for questions spanning several
 documents; abstention when evidence is insufficient; guardrails against
-answering outside the corpus.
+answering outside the corpus. *Delivered:* corpus scope analysis,
+diagnostic-only response guardrails and a reproducible diagnostic
+evaluation harness over the unchanged Stage 4 retrieval and prompt; no
+retrieval or prompt change was made.
 
 **Acceptance criteria.** Cross-document and unanswerable question categories
 are evaluated separately with reported (not invented) results. Under
@@ -233,9 +236,52 @@ protocol v1.2 §13 these are deterministic diagnostic results
 (`diagnostic_deterministic`) from an authorized real run; formal answer
 quality stays in Stage 6. Under protocol v1.3 §14 the reported run is the
 first pre-registered execution-complete live run, with every model-output
-failure counted; the v1.2 pilot stays incomplete. Stage 5 remains in
-progress until such results
-are obtained and reported.
+failure counted; the v1.2 pilot stays incomplete. **Satisfied**: the
+cross-document and unanswerable categories were evaluated separately in
+the reportable live run `live-20261124T045739024562Z-8665d379` (diagnostic acceptance only; factual
+answer quality is unmeasured).
+
+**Stage 5 diagnostic results** (`evaluation_kind: diagnostic_deterministic`,
+protocol v1.3 §14). Run `live-20261124T045739024562Z-8665d379`: real live inference, pre-registered at commit
+`7c63bbc` on a clean working tree, frozen identities unchanged, completion
+state `execution_complete`, reportable with model-output failures counted.
+
+> These diagnostics do not establish answer correctness, faithfulness,
+> claim-level citation support or semantic abstention appropriateness. Formal
+> evaluation remains pending Stage 6.
+
+| Overall | Result |
+|---|---|
+| Scheduled questions / attempted provider requests | 24 / 24 |
+| Contract-valid outcomes | 22/24 |
+| Model-output failures | 2/24, both `answer_validation` / `answered_has_limitations` (`dev-016`, `dev-021`) |
+| Selected-evidence page recall (answerable, recorded evidence) | 19/19 |
+| Selected complete multi-fact coverage | 12/14 |
+| Cited-evidence page recall (valid answer attempts) | 15/16 |
+| Cited complete multi-fact coverage (valid answer attempts) | 11/13 (1 excluded: model-output failure) |
+| Accepted-page citation overlap (distinct cited pages) | 24/30 (1 question excluded: model-output failure) |
+| Provider usage (24/24 requests recorded) | 69,777 input, 2,985 output tokens |
+
+| Category | Scheduled | Valid outcomes | Model-output failures | Valid statuses | Selected complete coverage | Cited complete coverage | Accepted-page overlap |
+|---|---|---|---|---|---|---|---|
+| single_doc_factual | 7 | 7 | 0 | 5 answered, 2 insufficient_evidence | 2/2 | 2/2 | 6/7 |
+| single_doc_conceptual | 5 | 5 | 0 | 5 answered | 5/5 | 5/5 | 8/10 |
+| cross_doc_comparison | 5 | 4 | 1 (`dev-016`) | 4 answered | 4/5 | 3/4 | 7/9 |
+| temporal_multi_evidence (counts only) | 2 | 2 | 0 | 1 answered, 1 partially_answered | 1/2 | 1/2 | 3/4 |
+| unanswerable | 5 | 4 | 1 (`dev-021`) | 1 answered, 3 insufficient_evidence | n/a | n/a | n/a |
+
+- Unanswerable, unconditional over all 5 scheduled: 3 abstentions, 1
+  answered, 0 partially answered, 1 model-output failure (operational flags,
+  not judged abstention appropriateness).
+- Answerable, unconditional over all 19 scheduled: 16 valid answer
+  attempts, 2 abstentions, 1 model-output failure.
+- Guardrails: 0 of 22 valid answers carry a warning; all findings are notices.
+- Contract validity, accepted-page overlap and structural citation validity
+  are not factual correctness, faithfulness or semantic citation support.
+- Small sample: 24 development questions, one sample per question; temporal
+  n = 2 and unanswerable n = 5. No held-out data was used.
+- The v1.2 pilot `live-20261123T111430692539Z-8665d379` (23 of 24 valid, one `response_contract` failure)
+  remains incomplete and not reportable; it predates the run log.
 
 Commits:
 - Commit 6.1: corpus vocabulary (manifest plus a reviewed alias table),
@@ -263,9 +309,24 @@ Commits:
   *(implemented; offline-verified; the paid run needs separate explicit
   authorization; the first authorized live run, `live-20261123T111430692539Z-8665d379`,
   completed 23 of 24 questions with one `response_contract` failure, so it is
-  incomplete and not reportable)*
-- Commit 6.4: one evidence-driven change, only if 6.3 justifies it.
-  *(conditional)*
+  incomplete and not reportable; the first v1.3 live run,
+  `live-20261124T045739024562Z-8665d379`, is execution-complete and reportable)*
+- Commit 6.4: **deliberately deferred.** The frozen baseline has known
+  retrieval and generation limitations (for example the missing-company
+  selection behind `dev-016`), but deterministic diagnostics do not establish
+  semantic answer correctness. Stage 6 first evaluates factual accuracy,
+  faithfulness, numerical correctness, claim support and abstention
+  appropriateness on the unchanged baseline. Any later retrieval, prompt or
+  generation change must be versioned and labelled development-informed
+  tuning. Stage 5 did not change the retrieval strategy or the generation
+  prompt.
+
+**Transition to Stage 6.** Formal evaluation of the frozen baseline: a
+versioned rubric and typed judgments, deterministic financial checks,
+human labels and judge calibration (κ with intervals), a bounded,
+explicitly authorized LLM judge over the 22 valid answers (the two
+failures stay reliability outcomes), per-category and intention-to-treat
+summaries, and regression procedures. The held-out split stays closed.
 
 ## Stage 6 — RAG Evaluation & Benchmarking
 
