@@ -1974,6 +1974,17 @@ founderlens.evaluation.judging_input --run <run_id>` prints a public summary
 answers (36 claims, 33 citations), 2 ineligible model-output failures
 (`dev-016`, `dev-021`). No judgment, label or score exists yet.
 
+## LLM-as-a-judge pipeline (Stage 6, Commit 7.5)
+
+`founderlens.evaluation.judge` (protocol §19; judge configuration `0a8a9b3b27c7`)
+plans `JudgeJob`s from the annotation templates of one ledger partition,
+groups them into `Batch`es by evidence context, builds allowlisted requests,
+calls an `LLMProvider` (the existing OpenAI adapter with zero SDK retries)
+only through `run_judge`, binds each structured `JudgeResponse` onto exactly
+its units as §15 `Judgment`s via `check_judgment`, and persists sealed
+records under `reports/judge/`. `replay` re-validates them offline and
+`judge_outputs` feeds `agreement.human_judge_pairs`.
+
 ## Agreement statistics (Stage 6, Commit 7.4)
 
 `founderlens.evaluation.agreement` (protocol §18; configuration `6f37129cddc2`) pairs

@@ -13,7 +13,8 @@
 > prospective execution-complete reporting (§14). v1.4 adds the formal
 > judging rubric and contracts (§15), deterministic financial checks
 > (§16), the human-annotation and calibration workflow (§17) and agreement
-> statistics (§18); the judge, the human labels themselves and scoring
+> statistics (§18) and the frozen, budgeted judge pipeline (§19); judge runs,
+> the human labels themselves and scoring
 > are implemented in later Stage 6 commits. No formal answer-quality result
 > exists yet.
 
@@ -1146,3 +1147,133 @@ same report.
 36 claims, 51 citation-support units, `dev-016` and `dev-021` ineligible; no
 annotation ledger exists, so 0 human–human and 0 human–judge pairs, no
 population and nothing measurable; no label or file was created.
+
+
+## 19. Frozen, budgeted LLM-as-a-judge pipeline (v1.4, Commit 7.5)
+
+`founderlens.evaluation.judge` (judge configuration `0a8a9b3b27c7`, prompt template
+`25a2bd69a03b`, response schema `416445ab90ab`) produces typed §15 `Judgment`s with `judge`
+provenance for the §18 human–judge comparison. Commit 7.5 is offline: it was
+built and verified with a scripted fake provider, and no paid judge request was
+made. The judge is an additional evaluation component; the nine generation
+identities and the frozen generation records are unchanged.
+
+**Frozen configuration.** The `judge_config_id` hashes the provider and exact
+model (`gpt-5.4-mini-2026-03-17`), generation settings (reasoning effort low,
+4096 output tokens, 60 s per attempt, **zero SDK retries**), the prompt template
+and response schema identities, rubric `e8b840e4f4af`, the evidence policy and
+instructions per dimension, batching, the retry policy, budgets and the
+referenced identities (extractor `c6956d52681f`, checker `c4160f8c38ec`,
+agreement configuration `6f37129cddc2`), the judging mode per batch group, the
+evidence-binding rules, the failure semantics (classes, aborting categories,
+atomicity) and the per-unit output-token estimate (24 units x 160 tokens fit
+the 4096-token output limit). Any normative change changes it. The
+judge uses the **same provider and model as the generator**; it is not an
+independent evaluator, and a separate request does not make it one. Its errors
+may correlate with the generator's.
+
+**Jobs.** Jobs are the existing judgment units of the §17 templates on eligible
+answers of one selected partition (questions whose ledger partition is
+`calibration` or `evaluation`); model-output failures get none. A job names the
+source run, record digest, question, rubric and judge configuration, dimension,
+exact unit identity, admissible evidence references, allowed labels, partition
+and lineage (`natural`). Job and batch IDs are content hashes; every planned job
+is exactly one template unit (no duplicate or orphan). Numerical correctness is
+judged only where the deterministic value check, run with the ledger's
+human-verified reference facts and explicit associations, is not a definitive
+exact match, rounding match or mismatch; definitive results stay deterministic
+and the judge never sees or overrides them. Benchmark required-fact statements
+are reference assertions of the dataset, not human-verified reference facts.
+**Synthetic-variant judging is deferred**: `plan_jobs` refuses any lineage
+other than `natural`, so no synthetic record can pose as natural.
+
+**Batching.** Compatible units share one request: per question, all claim
+faithfulness units (selected context), one request per cited evidence record
+(only that passage, so another citation cannot compensate), all attribution
+units (selected context), all reference-assisted units and all answer-level
+units, at most 24 units per request. A response must map onto exactly the
+requested units (no extra, missing or duplicate unit); every unit is validated
+and bound on its own, and if any fails, the request yields no judgment.
+`python -m founderlens.evaluation.judge plan --run <run_id> [--partition ...]`
+prints the deterministic job and request counts and a character-based token
+estimate, labelled as an estimate and kept apart from provider usage.
+
+**Evidence and reference assistance.** Faithfulness and attribution see the
+selected context the generator received; citation support sees only the cited
+record; factual and numerical correctness are **reference-assisted**: they see
+the dataset's required-fact statements and the chunks of their trusted pages
+(`reference_source`), which is correctness against a reference, not
+faithfulness. Answer-level units also see the response, the dataset's corpus
+answerability and the required-fact statements; abstention distinguishes corpus
+answerability from evidence sufficiency in the selected context, and
+`insufficient_evidence` is not rewarded automatically. Records name each
+batch's mode (`evidence_only` for faithfulness, citation support and
+attribution; `reference_assisted` otherwise); reference-assisted judging is
+neither reference-blind nor an independent factual evaluation. Evidence is cited
+by reference and exact quotation: the quote must be non-empty and occur exactly
+once in the cited permitted chunk (zero or several occurrences fail the request;
+no location is guessed), the reference must be one the unit may use (another
+citation cannot substitute), and the resulting code-point span, kind, document,
+page, chunk and source artifact must pass `check_judgment`. A `correct` or
+`incorrect` factual or numerical verdict needs at least one reference-source
+quote, so a number is never confirmed merely by appearing in a passage.
+
+**No label leakage.** Requests are built from an explicit field allowlist. They
+never contain human labels, review or agreement states, adjudications,
+rationales, previous judge outputs, synthetic expected labels or calibration
+results. The ledger is consulted only for partition membership.
+
+**Untrusted content.** Questions, answers, claims and passages are data inside a
+JSON payload marked untrusted; the trusted instructions contain no data and
+cannot be changed by it. Rubric, configuration, budget, file access, output
+schema and run policy are fixed in code. Tests feed injected instructions
+through passages; this reduces the risk, it does not guarantee resistance.
+
+**Failures and retries.** Failures are classified as infrastructure
+(configuration, authentication, permission, invalid request, unavailable model,
+timeout, connection, rate limit, quota, server error, unexpected response),
+model output (refusal, incomplete, structured output invalid, judgment contract
+invalid, evidence binding failed), integrity (input changed since the plan or a
+source record changed) or budget, and are never turned into labels or
+abstentions. There are no SDK retries; a structured-output failure may get one
+application repair request. Every attempt counts against `--max-requests`.
+Configuration, authentication, permission, invalid-request, model and quota
+failures stop the remaining requests.
+
+**Paid-call authorization.** `run` requires `--live`,
+`FOUNDERLENS_RUN_PAID_JUDGE=1`, a positive `--max-requests` at most 200,
+provider credentials, the frozen configuration, a clean Git tree at a commit and
+a selected partition with eligible units; `plan` and `replay` cannot construct a
+provider. No live run was executed.
+
+**Persistence and replay.** A run pre-registers (run and source IDs, Git state,
+identities, partition, planned jobs and requests, budget, selection and retry
+policy, UTC start) before any request, appends one sealed private record per
+batch (job IDs, input digest, attempts with request IDs, usage as reported and
+output digests, judgments, private rationales, failure codes, outcome) and ends
+with a finish entry; a run without one is `incomplete`. Each attempt is marked
+in the run log before its request (`attempt_started`) and counted against the
+budget before it is sent, so a batch interrupted mid-request is identifiable as
+in flight. A run never overwrites existing files. Records live under the
+git-ignored `reports/judge/`; local digests detect accidental edits and are not
+tamper-proof. `replay` re-validates records offline (schema version, seals,
+duplicate batch records, per-record judge configuration, rubric, judge run,
+source run and record digest, batch membership and input digests against a
+fresh plan, judgment binding), reproduces the summary and failure
+classifications byte-for-byte without writing anything or constructing a
+provider; missing usage stays missing.
+
+**Agreement.** `judge_outputs(records)` feeds `agreement.human_judge_pairs`
+directly: pairs need the identical unit, the judge configuration and a matching
+partition; `not_assessable` outputs stay visible as assessability mismatches.
+Synthetic-variant judging is not implemented in this commit (refused, see
+above); the synthetic agreement path remains available for later. Nothing here
+establishes that the judge is calibrated or factually reliable: no human label
+and no judge output exists, so no agreement has been measured.
+
+**Baseline plan** (opt-in, read-only, no partition assigned): 22 eligible
+answers, `dev-016` and `dev-021` excluded; 325 jobs (51 citation support,
+36 faithfulness, 108 attribution, 27 numerical, 37 factual, 22 each answer-level)
+in 108 requests (33 citation, 17 faithfulness, 17 attribution, 19
+reference-assisted, 22 answer-level); 0 provider calls. Without human labels no
+question has a partition, so a live run would be refused.

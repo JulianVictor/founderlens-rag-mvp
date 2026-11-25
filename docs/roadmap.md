@@ -10,7 +10,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
 | 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
 | 5 | Cross-Document Reasoning & Guardrails | Complete (diagnostic acceptance; Commits 6.1–6.3; 6.4 deferred) |
-| 6 | RAG Evaluation & Benchmarking | In progress (Commits 7.1 rubric and judgment contracts, 7.2 deterministic financial checks, 7.3 annotation and calibration workflow, 7.4 agreement statistics) |
+| 6 | RAG Evaluation & Benchmarking | In progress (Commits 7.1 rubric and judgment contracts, 7.2 deterministic financial checks, 7.3 annotation and calibration workflow, 7.4 agreement statistics, 7.5 judge pipeline) |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
 
@@ -369,7 +369,13 @@ Commits:
   non-substantive and exclusion accounting, question-clustered bootstrap
   intervals and the planned kappa 0.60 target (configuration `6f37129cddc2`).
   *(implemented; offline; no labels or judge outputs exist, nothing measured)*
-- Commit 7.5: frozen judge configuration and mocked judge workflow. *(planned)*
+- Commit 7.5: frozen, budgeted LLM-as-a-judge pipeline (protocol §19): content-
+  addressed judge configuration (`0a8a9b3b27c7`; same model as the generator,
+  disclosed), deterministic jobs and batches over existing units, allowlisted
+  untrusted inputs, strict structured outputs bound to `Judgment`s, failure
+  classes, zero SDK retries and one budgeted repair, gated live path,
+  pre-registration, sealed records and offline replay. *(implemented; offline;
+  verified with a fake provider; no paid judge request made)*
 - Commits 7.6–7.8: authorized calibration and evaluation runs, reporting,
   regression procedures. *(planned; paid steps need explicit authorization)*
 
