@@ -54,7 +54,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -83,6 +83,9 @@ from founderlens.evaluation.schema import EvalQuestion
 from founderlens.guardrails.scope import CorpusVocabulary
 from founderlens.ingestion.chunk import ChunkRecord
 from founderlens.retrieval.schema import ChunkCollection, RetrievalError
+
+if TYPE_CHECKING:
+    from founderlens.evaluation.partition import PartitionManifest
 
 ANNOTATION_VERSION: Final = 1
 PACKET_VERSION: Final = 1
@@ -1502,15 +1505,20 @@ def import_worksheet(
     paths: AnnotationPaths,
     worksheet_path: Path,
     *,
+    manifest: PartitionManifest,
     dry_run: bool = False,
     now: datetime | None = None,
 ) -> ImportResult:
     """Validate a worksheet and, unless ``dry_run``, append its entries atomically.
 
+    The worksheet's question and role must match the frozen partition manifest, and
+    the existing ledger history must agree with it; otherwise nothing is imported.
     Worksheets are read only from the private annotation directory. The new ledger
     is written to a temporary file and moved into place in one step, so a failed
     validation or an interrupted write leaves the previous ledger unchanged.
     """
+    from founderlens.evaluation import partition as pt
+
     if not worksheet_path.resolve().is_relative_to(paths.root.resolve()):
         raise AnnotationError(["worksheets must live in the private annotation directory"])
     try:
@@ -1520,8 +1528,18 @@ def import_worksheet(
         raise AnnotationError(["cannot read the worksheet as JSON"]) from None
     if not isinstance(data, dict):
         raise AnnotationError(["worksheet must be a JSON object"])
+    if manifest.source_run_id != ctx.run.run_id:
+        raise AnnotationError(["the partition manifest belongs to another generation run"])
+    try:
+        question_id, role = str(data["question_id"]), Role(data["role"])
+    except (KeyError, ValueError):
+        raise AnnotationError(["worksheet names no valid question and role"]) from None
+    problems = pt.check_worksheet(manifest, question_id, role)
     before = paths.ledger.read_bytes() if paths.ledger.is_file() else b""
     ledger = load_ledger(paths.ledger)
+    problems += pt.ledger_conflicts(manifest, ledger)
+    if problems:
+        raise AnnotationError(["partition check failed: " + p for p in problems])
     result = plan_import(
         ctx,
         ledger,
@@ -1624,10 +1642,23 @@ def create_worksheet(
     paths: AnnotationPaths,
     question_id: str,
     annotator_id: str,
-    role: Role,
+    role: Role | None,
+    *,
+    manifest: PartitionManifest,
 ) -> Path:
+    """A pending worksheet whose role is the question's frozen partition.
+
+    ``role=None`` takes the role from the manifest; an explicit role that differs
+    from the manifest is refused.
+    """
+    from founderlens.evaluation import partition as pt
+
+    chosen = manifest.role_of(question_id) if role is None else role
+    problems = pt.check_worksheet(manifest, question_id, chosen or Role.CALIBRATION)
+    if problems or chosen is None:
+        raise AnnotationError(["partition check failed: " + p for p in problems])
     packet = build_packet(ctx, question_id)
-    template = worksheet_template(packet, annotator_id, role)
+    template = worksheet_template(packet, annotator_id, chosen)
     path = paths.worksheets / f"{question_id}.{annotator_id}.json"
     if path.exists():
         raise AnnotationError(["worksheet already exists; resume editing it"])
@@ -1745,7 +1776,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             p.add_argument("--question", required=True)
         if name == "worksheet":
             p.add_argument("--annotator", required=True)
-            p.add_argument("--role", choices=[r.value for r in Role], default="calibration")
+            p.add_argument(
+                "--role",
+                choices=[r.value for r in Role],
+                default=None,
+                help="defaults to the question's frozen partition; a different role is refused",
+            )
         if name in ("validate", "import"):
             p.add_argument("--worksheet", required=True)
     args = parser.parse_args(argv)
@@ -1759,11 +1795,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "worksheet":
             if not re.fullmatch(QUESTION_PATTERN, args.question):
                 raise AnnotationError(["only development questions may be annotated"])
-            path = create_worksheet(ctx, paths, args.question, args.annotator, Role(args.role))
+            from founderlens.evaluation import partition as pt
+
+            role = None if args.role is None else Role(args.role)
+            path = create_worksheet(
+                ctx,
+                paths,
+                args.question,
+                args.annotator,
+                role,
+                manifest=pt.load_manifest(settings, ctx),
+            )
             output = {"worksheet": path.name, "question_id": args.question}
         elif args.command in ("validate", "import"):
+            from founderlens.evaluation import partition as pt
+
             result = import_worksheet(
-                ctx, paths, Path(args.worksheet), dry_run=args.command == "validate"
+                ctx,
+                paths,
+                Path(args.worksheet),
+                manifest=pt.load_manifest(settings, ctx),
+                dry_run=args.command == "validate",
             )
             output = {**result.public(), "written": args.command == "import"}
         elif args.command == "status":

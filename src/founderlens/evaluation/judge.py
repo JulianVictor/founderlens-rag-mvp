@@ -71,6 +71,7 @@ from founderlens.evaluation import completion as cp
 from founderlens.evaluation import financial_checks as fc
 from founderlens.evaluation import generation_eval as ge
 from founderlens.evaluation import judging_input as ji
+from founderlens.evaluation import partition as pt
 from founderlens.evaluation.benchmark import EvaluationError, _git_state
 from founderlens.evaluation.judgments import (
     RUBRIC,
@@ -92,7 +93,7 @@ from founderlens.generation.schema import GenerationRequest, LLMProvider, TokenU
 from founderlens.retrieval.schema import RetrievalError
 
 JUDGE_VERSION: Final = 1
-RECORD_SCHEMA_VERSION: Final = 1
+RECORD_SCHEMA_VERSION: Final = 2  # v2: records name the frozen partition allocation
 REPORT_SUBDIR: Final = "judge"
 PAID_ENV: Final = "FOUNDERLENS_RUN_PAID_JUDGE"
 HARD_REQUEST_CEILING: Final = 200
@@ -364,6 +365,7 @@ class Plan:
     batches: tuple[Batch, ...]
     exclusions: Mapping[str, int]
     questions: tuple[str, ...]
+    allocation_manifest_id: str | None = None
 
     @property
     def jobs(self) -> tuple[JudgeJob, ...]:
@@ -450,9 +452,11 @@ def plan_jobs(
     ledger: an.Ledger,
     partition: Role | None = None,
     lineage: str = "natural",
+    manifest: pt.PartitionManifest | None = None,
 ) -> Plan:
-    """Deterministic jobs and batches. ``partition`` selects questions by their ledger
-    partition; ``None`` plans every eligible answer for estimation only.
+    """Deterministic jobs and batches. ``partition`` selects the questions the frozen
+    partition ``manifest`` assigns to it (required: fails closed without it); ``None``
+    plans every eligible answer for estimation only.
 
     Only natural generation outputs are judged; synthetic-variant judging is deferred
     and refused explicitly.
@@ -464,6 +468,14 @@ def plan_jobs(
                 "generation outputs can be judged"
             ]
         )
+    if partition is not None and manifest is None:
+        raise pt.PartitionError(["a partitioned plan needs the frozen partition manifest"])
+    if manifest is not None:
+        if manifest.source_run_id != ctx.run.run_id:
+            raise pt.PartitionError(["the partition manifest belongs to another generation run"])
+        conflicts = pt.ledger_conflicts(manifest, ledger)
+        if conflicts:
+            raise pt.PartitionError(conflicts)
     partitions = ledger.partitions()
     exclusions: Counter[str] = Counter()
     batches: list[Batch] = []
@@ -472,7 +484,9 @@ def plan_jobs(
         if not q.eligible:
             exclusions["model_output_failure"] += 1
             continue
-        assigned = partitions.get(q.question_id)
+        assigned = (
+            partitions.get(q.question_id) if manifest is None else manifest.role_of(q.question_id)
+        )
         if partition is not None and assigned is not partition:
             exclusions["outside_selected_partition"] += 1
             continue
@@ -549,6 +563,7 @@ def plan_jobs(
         batches=tuple(batches),
         exclusions=dict(sorted(exclusions.items())),
         questions=tuple(selected),
+        allocation_manifest_id=None if manifest is None else manifest.manifest_id,
     )
 
 
@@ -911,6 +926,8 @@ def live_authorization_problems(
         problems.append("the plan was not built with the frozen judge configuration")
     if plan.partition not in (Role.CALIBRATION.value, Role.EVALUATION.value):
         problems.append("a calibration or evaluation partition must be selected")
+    elif plan.allocation_manifest_id is None:
+        problems.append("the plan is not bound to the frozen partition manifest")
     elif not plan.batches:
         problems.append("the selected partition has no eligible judgment units")
     return problems
@@ -933,12 +950,26 @@ def run_judge(
     mode: Literal["mock", "live"],
     max_requests: int,
     git: Mapping[str, Any],
+    manifest: pt.PartitionManifest,
     ledger: an.Ledger | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> RunOutputs:
-    """Execute a plan. Pre-registers, persists one sealed record per batch, finishes."""
+    """Execute a plan. Pre-registers, persists one sealed record per batch, finishes.
+
+    The plan must be bound to ``manifest``, and every batch's question must still be
+    allocated to the plan's partition, so no question can move between planning and
+    execution.
+    """
     if plan.partition is None:
         raise an.AnnotationError(["a partition must be selected to run the judge"])
+    if plan.allocation_manifest_id != manifest.manifest_id:
+        raise pt.PartitionError(["the plan was built with another partition allocation"])
+    allowed = set(manifest.questions(Role(plan.partition)))
+    if any(b.question_id not in allowed or b.partition != plan.partition for b in plan.batches):
+        raise pt.PartitionError(["a planned question is not in the selected partition"])
+    conflicts = pt.ledger_conflicts(manifest, ledger or an.Ledger())
+    if conflicts:
+        raise pt.PartitionError(conflicts)
     if not 0 < max_requests <= HARD_REQUEST_CEILING:
         raise an.AnnotationError(["max_requests must be within the hard request ceiling"])
     started = now()
@@ -962,7 +993,9 @@ def run_judge(
             "planned_jobs": len(plan.jobs),
             "planned_requests": len(plan.batches),
             "request_budget": max_requests,
-            "selection_policy": "questions whose ledger partition is the selected partition",
+            "selection_policy": "questions the frozen partition manifest assigns to the "
+            "selected partition",
+            "allocation_manifest_id": plan.allocation_manifest_id,
             "retry_policy": JUDGE_CONFIG["retry_policy"],
             "started_at": started.isoformat(),
         },
@@ -985,7 +1018,15 @@ def run_judge(
     try:
         for batch in plan.batches:
             record = _execute_batch(
-                ctx, batch, provider, used, max_requests, aborted, ledger, mark_attempt
+                ctx,
+                batch,
+                provider,
+                used,
+                max_requests,
+                aborted,
+                ledger,
+                mark_attempt,
+                plan.allocation_manifest_id,
             )
             used += len(record["attempts"])
             if record["failure"] and record["failure"]["category"] in ABORTING:
@@ -1029,6 +1070,7 @@ def _execute_batch(
     aborted: str | None,
     ledger: an.Ledger | None,
     on_attempt: Callable[[str, int], None] = lambda batch_id, attempt: None,
+    allocation_id: str | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "record_schema_version": RECORD_SCHEMA_VERSION,
@@ -1040,6 +1082,7 @@ def _execute_batch(
         "judge_config_id": judge_config_id(),
         "rubric_id": rubric_id(),
         "partition": batch.partition,
+        "allocation_manifest_id": allocation_id,
         "lineage": "natural",
         "judging_mode": JUDGE_CONFIG["judging_modes"][batch.group.value],
         "job_ids": [j.job_id for j in batch.jobs],
@@ -1192,6 +1235,7 @@ def summarize(
             "mode": mode,
             "source_run_id": plan.run_id,
             "partition": plan.partition,
+            "allocation_manifest_id": plan.allocation_manifest_id,
             **_identities(),
             "planned_requests": len(plan.batches),
             "planned_jobs": len(plan.jobs),
@@ -1230,6 +1274,7 @@ def replay(
     ledger: an.Ledger,
     records_path: Path,
     summary_path: Path,
+    manifest: pt.PartitionManifest,
 ) -> dict[str, Any]:
     """Re-validate stored records offline; never calls a provider or writes a file."""
     records = read_records(records_path)
@@ -1242,8 +1287,10 @@ def replay(
         problems.append("records were produced with another judge configuration")
     if original.get("source_run_id") != ctx.run.run_id:
         problems.append("records belong to another source generation run")
+    if original.get("allocation_manifest_id") != manifest.manifest_id:
+        problems.append("records were produced under another partition allocation")
     partition = original.get("partition")
-    plan = plan_jobs(ctx, ledger, None if partition is None else Role(partition))
+    plan = plan_jobs(ctx, ledger, None if partition is None else Role(partition), manifest=manifest)
     batches = {b.batch_id: b for b in plan.batches}
     decompositions = ledger.decompositions()
     ids = [str(r.get("batch_id")) for r in records]
@@ -1260,6 +1307,8 @@ def replay(
             "source run": r.get("source_run_id") == ctx.run.run_id,
             "source record": q is not None and r.get("source_record_sha256") == q.record_sha256,
             "judge run": r.get("judge_run_id") == original.get("judge_run_id"),
+            "partition allocation": r.get("allocation_manifest_id") == manifest.manifest_id,
+            "partition": r.get("partition") == original.get("partition"),
         }
         bad = [name for name, ok in identity.items() if not ok]
         if bad:
@@ -1297,6 +1346,7 @@ def plan_summary(ctx: an.AnnotationContext, plan: Plan) -> dict[str, Any]:
         {
             "source_run_id": plan.run_id,
             "partition": plan.partition,
+            "allocation_manifest_id": plan.allocation_manifest_id,
             **_identities(),
             "questions": len(plan.questions),
             "exclusions": dict(plan.exclusions),
@@ -1336,12 +1386,15 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
             source = json.loads(summary_path.read_text(encoding="utf-8"))["source_run_id"]
             ctx = an.load_context(settings, source)
             ledger = an.load_ledger(an.annotation_paths(settings, source).ledger)
-            output: object = replay(ctx, ledger, records, summary_path)
+            output: object = replay(
+                ctx, ledger, records, summary_path, pt.load_manifest(settings, ctx)
+            )
         else:
             ctx = an.load_context(settings, args.run)
             ledger = an.load_ledger(an.annotation_paths(settings, args.run).ledger)
             partition = None if args.partition is None else Role(args.partition)
-            plan = plan_jobs(ctx, ledger, partition)
+            manifest = None if partition is None else pt.load_manifest(settings, ctx)
+            plan = plan_jobs(ctx, ledger, partition, manifest=manifest)
             if args.command == "plan":
                 output = plan_summary(ctx, plan)
             else:
@@ -1364,6 +1417,7 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
                     mode="live",
                     max_requests=int(args.max_requests),
                     git=_git_state(),
+                    manifest=pt.load_manifest(settings, ctx),
                     ledger=ledger,
                 )
                 output = outputs.summary

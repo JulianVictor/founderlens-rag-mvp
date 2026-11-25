@@ -34,7 +34,15 @@ from founderlens.generation.schema import (
     TokenUsage,
 )
 from tests.test_evaluation_agreement import label
-from tests.test_evaluation_annotation import association, commit, only, sheet, supported, with_fact
+from tests.test_evaluation_annotation import (
+    association,
+    commit,
+    manifest,
+    only,
+    sheet,
+    supported,
+    with_fact,
+)
 from tests.test_evaluation_generation_eval import SPLIT
 from tests.test_evaluation_judging_input import CLEAN, _run, _verify
 from tests.test_guardrails_response_checks import COLLECTION, VOCAB
@@ -178,9 +186,9 @@ def run(
     provider: FakeJudge,
     max_requests: int = 50,
 ) -> jd.RunOutputs:
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     return jd.run_judge(ctx, plan, lambda: provider, tmp_path, mode="mock",
-                        max_requests=max_requests, git=CLEAN, ledger=ledger,
+                        max_requests=max_requests, git=CLEAN, manifest=manifest(ctx), ledger=ledger,
                         now=lambda: NOW)  # fmt: skip
 
 
@@ -210,8 +218,8 @@ def test_frozen_configuration_identity(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_jobs_are_stable_ordered_and_exclude_failures(ctx: an.AnnotationContext) -> None:
     ledger = calibration_ledger(ctx)
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
-    assert plan == jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
+    assert plan == jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     ids = [j.job_id for j in plan.jobs]
     assert len(ids) == len(set(ids))
     assert plan.questions == ("dev-003",)
@@ -228,7 +236,7 @@ def test_jobs_are_stable_ordered_and_exclude_failures(ctx: an.AnnotationContext)
 
 
 def test_batches_separate_selected_cited_and_reference_evidence(ctx: an.AnnotationContext) -> None:
-    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION, manifest=manifest(ctx))
     by_group: dict[jd.Group, list[jd.Batch]] = {}
     for b in plan.batches:
         by_group.setdefault(b.group, []).append(b)
@@ -253,7 +261,7 @@ def test_batches_separate_selected_cited_and_reference_evidence(ctx: an.Annotati
 
 def test_judge_inputs_never_carry_human_labels(ctx: an.AnnotationContext) -> None:
     ledger = calibration_ledger(ctx)
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     for batch in plan.batches:
         instructions, data = jd.build_request(ctx, batch)
         for fragment in jd.FORBIDDEN_FRAGMENTS:
@@ -267,8 +275,8 @@ def test_judge_inputs_never_carry_human_labels(ctx: an.AnnotationContext) -> Non
 def test_injected_instructions_stay_data(ctx: an.AnnotationContext, tmp_path: pathlib.Path) -> None:
     injected = with_text(ctx, " " + INJECTION)
     ledger = calibration_ledger(ctx)
-    clean_plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
-    plan = jd.plan_jobs(injected, ledger, Role.CALIBRATION)
+    clean_plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
+    plan = jd.plan_jobs(injected, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     for clean, dirty in zip(clean_plan.batches, plan.batches, strict=True):
         assert jd.build_request(ctx, clean)[0] == jd.build_request(injected, dirty)[0]
         data = json.loads(jd.build_request(injected, dirty)[1])
@@ -281,7 +289,7 @@ def test_injected_instructions_stay_data(ctx: an.AnnotationContext, tmp_path: pa
 
     provider = FakeJudge(obeys)
     outputs = jd.run_judge(injected, plan, lambda: provider, tmp_path, mode="mock",
-                           max_requests=50, git=CLEAN, ledger=ledger,
+                           max_requests=50, git=CLEAN, manifest=manifest(ctx), ledger=ledger,
                            now=lambda: NOW)  # fmt: skip
     records = jd.read_records(outputs.records_path)
     assert all(r["judgments"] == [] for r in records)
@@ -326,7 +334,7 @@ def test_valid_mock_run_produces_bound_judge_judgments(
 
 
 def test_one_request_and_multi_unit_batches_map_per_unit(ctx: an.AnnotationContext) -> None:
-    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION, manifest=manifest(ctx))
     attribution = next(b for b in plan.batches if b.group is jd.Group.ATTRIBUTION)
     assert len(attribution.jobs) == 6  # 2 claims x 3 aspects in one request
     payload = json.loads(jd.build_request(ctx, attribution)[1])
@@ -357,7 +365,7 @@ def test_one_request_and_multi_unit_batches_map_per_unit(ctx: an.AnnotationConte
 def test_invalid_units_fail_the_whole_request(
     ctx: an.AnnotationContext, mutate: Callable[[dict[str, Any]], dict[str, Any]], category: str
 ) -> None:
-    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION, manifest=manifest(ctx))
     citation = next(b for b in plan.batches if b.group is jd.Group.CITATION)
     payload = json.loads(jd.build_request(ctx, citation)[1])
     results = [mutate(r) for r in default_results(payload)]
@@ -445,13 +453,14 @@ def test_input_integrity_failures_never_reach_the_provider(
     ctx: an.AnnotationContext, tmp_path: pathlib.Path
 ) -> None:
     ledger = calibration_ledger(ctx)
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     tampered = dataclasses.replace(
         plan, batches=(dataclasses.replace(plan.batches[0], input_sha256="0" * 64),)
     )
     provider = FakeJudge()
     outputs = jd.run_judge(ctx, tampered, lambda: provider, tmp_path, mode="mock",
-                           max_requests=5, git=CLEAN, now=lambda: NOW)  # fmt: skip
+                           max_requests=5, git=CLEAN,
+                           manifest=manifest(ctx), now=lambda: NOW)  # fmt: skip
     (record,) = jd.read_records(outputs.records_path)
     assert (record["outcome"], record["failure"]["class"]) == ("not_run_integrity", "integrity")
     assert provider.calls == 0
@@ -468,7 +477,7 @@ def test_interrupted_runs_are_detected(ctx: an.AnnotationContext, tmp_path: path
     assert "finished" not in events  # never finished
     (records_path,) = (tmp_path / "judge").glob("*.records.jsonl")
     records = jd.read_records(records_path)
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     summary = jd.summarize(records, plan, run_id="judge-x", mode="mock")
     assert (summary["missing_records"], summary["completion_state"]) == (
         len(plan.batches) - 2,
@@ -489,7 +498,7 @@ def test_replay_is_offline_and_reproduces_the_summary(
     outputs = run(ctx, ledger, tmp_path, FakeJudge(usage=TokenUsage()))
     assert outputs.summary["usage"]["total_tokens"] is None  # missing usage never imputed
     before = outputs.records_path.read_bytes()
-    replayed = jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path)
+    replayed = jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path, manifest(ctx))
     assert replayed["equivalent_to_original"] is True
     assert replayed["usage"] == outputs.summary["usage"]
     assert outputs.records_path.read_bytes() == before  # nothing overwritten
@@ -500,14 +509,14 @@ def test_replay_is_offline_and_reproduces_the_summary(
         "\n".join([json.dumps(record), *lines[1:]]) + "\n", encoding="utf-8"
     )
     with pytest.raises(an.AnnotationError, match="broken seal"):
-        jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path)
+        jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path, manifest(ctx))
     outputs.records_path.write_bytes(before)
     with pytest.raises(an.AnnotationError, match="inputs differ"):
         jd.replay(with_text(ctx, " edited"), ledger, outputs.records_path,
-                  outputs.summary_path)  # fmt: skip
+                  outputs.summary_path, manifest(ctx))  # fmt: skip
     monkeypatch.setattr(jd, "TEMPLATE", jd.TEMPLATE + " v2")
     with pytest.raises(an.AnnotationError, match="another judge configuration"):
-        jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path)
+        jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path, manifest(ctx))
 
 
 def test_judge_outputs_feed_human_judge_agreement(
@@ -542,7 +551,7 @@ def test_judge_outputs_feed_human_judge_agreement(
 
 
 def test_live_execution_needs_every_gate(ctx: an.AnnotationContext) -> None:
-    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION, manifest=manifest(ctx))
     ok = {"FOUNDERLENS_RUN_PAID_JUDGE": "1", "OPENAI_API_KEY": "test-placeholder"}
     assert jd.live_authorization_problems(live=True, environ=ok, max_requests=5, git=CLEAN,
                                           plan=plan) == []  # fmt: skip
@@ -555,7 +564,8 @@ def test_live_execution_needs_every_gate(ctx: an.AnnotationContext) -> None:
         ({"environ": {"FOUNDERLENS_RUN_PAID_JUDGE": "1"}}, "credentials"),
         ({"git": {"commit": "c0ffee", "working_tree_clean": False}}, "clean"),
         ({"plan": jd.plan_jobs(ctx, an.Ledger())}, "partition"),
-        ({"plan": jd.plan_jobs(ctx, an.Ledger(), Role.EVALUATION)}, "no eligible"),
+        ({"plan": dataclasses.replace(plan, batches=())}, "no eligible"),
+        ({"plan": dataclasses.replace(plan, allocation_manifest_id=None)}, "not bound"),
         ({"plan": dataclasses.replace(plan, judge_config_id="0" * 12)}, "frozen judge"),
     ]
     for over, match in cases:
@@ -584,7 +594,7 @@ def test_public_outputs_and_errors_hold_no_private_text(
 ) -> None:
     ledger = calibration_ledger(ctx)
     outputs = run(ctx, ledger, tmp_path, FakeJudge())
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     blob = json.dumps([outputs.summary, jd.plan_summary(ctx, plan)])
     private = [c.text for q in ctx.run.questions for c in q.claims]
     private += [c.text for c in COLLECTION.chunks]
@@ -621,7 +631,7 @@ Q4_CHUNK = "nvda-fy2025-q4:p0001:c0000:0c2f87411627"
 
 
 def citation_batch(ctx: an.AnnotationContext, evidence_id: str) -> jd.Batch:
-    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION, manifest=manifest(ctx))
     return next(
         b for b in plan.batches if b.group is jd.Group.CITATION and b.evidence[0].ref == evidence_id
     )
@@ -672,7 +682,7 @@ def test_bound_evidence_has_exact_kind_chunk_page_and_offsets(ctx: an.Annotation
 
 
 def test_reference_verdicts_need_reference_quotes(ctx: an.AnnotationContext) -> None:
-    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION, manifest=manifest(ctx))
     reference = next(b for b in plan.batches if b.group is jd.Group.REFERENCE)
     payload = json.loads(jd.build_request(ctx, reference)[1])
     with pytest.raises(jd._BatchFailure) as info:
@@ -685,7 +695,7 @@ def test_reference_verdicts_need_reference_quotes(ctx: an.AnnotationContext) -> 
 def test_reference_material_reaches_only_reference_assisted_batches(
     ctx: an.AnnotationContext, tmp_path: pathlib.Path
 ) -> None:
-    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION, manifest=manifest(ctx))
     for batch in plan.batches:
         payload = json.loads(jd.build_request(ctx, batch)[1])
         assisted = batch.group in (jd.Group.REFERENCE, jd.Group.ANSWER)
@@ -701,10 +711,10 @@ def test_reference_material_reaches_only_reference_assisted_batches(
 
 def test_definitive_deterministic_values_are_never_judged(ctx: an.AnnotationContext) -> None:
     ledger = commit(ctx, calibration_ledger(ctx), with_fact(sheet(ctx)))
-    before = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    before = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     assert "deterministic_definitive" not in before.exclusions  # unverified without a link
     ledger = commit(ctx, ledger, only(sheet(ctx), association(ctx)))
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     assert plan.exclusions["deterministic_definitive"] == 1
     numeric = [j for j in plan.jobs if j.dimension.value == "numerical_correctness"]
     assert [(j.unit["claim_position"], j.unit["value_index"]) for j in numeric] == [(2, 1)]
@@ -712,13 +722,15 @@ def test_definitive_deterministic_values_are_never_judged(ctx: an.AnnotationCont
 
 def test_partitions_and_synthetic_scope_are_enforced(ctx: an.AnnotationContext) -> None:
     ledger = calibration_ledger(ctx)
-    evaluation = jd.plan_jobs(ctx, ledger, Role.EVALUATION)
+    evaluation = jd.plan_jobs(ctx, ledger, Role.EVALUATION, manifest=manifest(ctx))
     assert "dev-003" not in evaluation.questions  # a calibration question never evaluates
     head = ledger.heads()[("ann-a1", "judgment:dev-003/claim:1#claim_faithfulness")]
     withdraw = {**supported(sheet(ctx)), "review_action": "withdrawn",
                 "supersedes": head.entry_id, "revision_reason": "entry_error"}  # fmt: skip
     ledger = commit(ctx, ledger, only(sheet(ctx), withdraw))
-    assert jd.plan_jobs(ctx, ledger, Role.CALIBRATION).questions == ("dev-003",)
+    assert jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx)).questions == (
+        "dev-003",
+    )
     with pytest.raises(an.AnnotationError, match="synthetic-variant judging is not implemented"):
         jd.plan_jobs(ctx, ledger, Role.CALIBRATION, lineage="synthetic")
 
@@ -785,7 +797,7 @@ def test_runs_never_overwrite_and_interruptions_are_in_flight(
     (records_path,) = (interrupted / "judge").glob("*.records.jsonl")
     records = jd.read_records(records_path)
     run_id = log[0]["judge_run_id"]
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     assert jd.in_flight_batches(log, run_id, records) == [plan.batches[2].batch_id]
 
 
@@ -802,8 +814,8 @@ def test_replay_rejects_identity_membership_and_duplicates(
                   refusal="x")}))  # fmt: skip
     monkeypatch.setattr(op, "OpenAIProvider", forbidden)
     files = sorted(p.name for p in (tmp_path / "judge").iterdir())
-    first = jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path)
-    second = jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path)
+    first = jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path, manifest(ctx))
+    second = jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path, manifest(ctx))
     assert json.dumps(first, sort_keys=True) == json.dumps(second, sort_keys=True)
     assert first["equivalent_to_original"] is True
     assert first["failures"] == {"model_output:refusal": 1}  # classification preserved
@@ -825,15 +837,15 @@ def test_replay_rejects_identity_membership_and_duplicates(
         ({"source_record_sha256": "0" * 64}, "identity mismatch"),
         ({"judge_run_id": "judge-other"}, "identity mismatch"),
         ({"job_ids": ["0" * 16]}, "inputs differ"),
-        ({"record_schema_version": 2}, "incompatible schema"),
+        ({"record_schema_version": 1}, "incompatible schema"),
     ):
         rewrite(0, **changes)
         with pytest.raises(an.AnnotationError, match=match):
-            jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path)
+            jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path, manifest(ctx))
         outputs.records_path.write_text(original, encoding="utf-8")
     outputs.records_path.write_text(original + lines[0] + "\n", encoding="utf-8")
     with pytest.raises(an.AnnotationError, match="duplicate batch record"):
-        jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path)
+        jd.replay(ctx, ledger, outputs.records_path, outputs.summary_path, manifest(ctx))
 
 
 def test_agreement_reference_states_with_judge_outputs(

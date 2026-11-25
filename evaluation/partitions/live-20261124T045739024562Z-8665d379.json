@@ -1,0 +1,105 @@
+{
+  "allocation_algorithm": "per stratum key '<category>/<answered|abstained>' (abstained: insufficient_evidence or a local abstention; partially_answered counts as answered), the first quota questions in sha256(seed|question_id) ascending order are calibration; all other eligible questions, including strata without a quota, are evaluation; ineligible questions are excluded",
+  "allocation_manifest_id": "d3b06dedd4f0",
+  "calibration": [
+    "dev-001",
+    "dev-002",
+    "dev-005",
+    "dev-009",
+    "dev-010",
+    "dev-015",
+    "dev-017",
+    "dev-019",
+    "dev-020",
+    "dev-023",
+    "dev-024"
+  ],
+  "collection_artifact_sha256": "f9a8f12a8d1c61aec3580f7f95dd7fd44a26860ff751d85d5a778693f59c55a8",
+  "coverage": {
+    "calibration": {
+      "by_stratum": {
+        "cross_doc_comparison/answered": 2,
+        "single_doc_conceptual/answered": 2,
+        "single_doc_factual/abstained": 1,
+        "single_doc_factual/answered": 2,
+        "temporal_multi_evidence/answered": 1,
+        "unanswerable/abstained": 2,
+        "unanswerable/answered": 1
+      },
+      "questions": 11,
+      "questions_with_claims": 8,
+      "required_facts": 17
+    },
+    "evaluation": {
+      "by_stratum": {
+        "cross_doc_comparison/answered": 2,
+        "single_doc_conceptual/answered": 3,
+        "single_doc_factual/abstained": 1,
+        "single_doc_factual/answered": 3,
+        "temporal_multi_evidence/answered": 1,
+        "unanswerable/abstained": 1
+      },
+      "questions": 11,
+      "questions_with_claims": 9,
+      "required_facts": 20
+    }
+  },
+  "dataset_sha256": "c53499993797cf250e83e070e3ae91b6ad92c26321bfe0b8ac824fc8cebb7e23",
+  "dataset_version": "1.0.0",
+  "disclosure": "Internal development calibration/evaluation split of one frozen generation run. It is not an independent or sealed held-out test; both partitions come from the development split, are small, and the judge shares the generator's model.",
+  "eligible_question_set_sha256": "b48b69b17154152f29d0b2626d414172f685430b74f8cd2e854dd7cda52a076e",
+  "evaluation": [
+    "dev-003",
+    "dev-004",
+    "dev-006",
+    "dev-007",
+    "dev-008",
+    "dev-011",
+    "dev-012",
+    "dev-013",
+    "dev-014",
+    "dev-018",
+    "dev-022"
+  ],
+  "excluded_model_output_failures": [
+    "dev-016",
+    "dev-021"
+  ],
+  "generation_identities": {
+    "analyzer_id": "b447ce1aee09",
+    "answer_schema_id": "e3ec802e2267",
+    "collection_artifact_sha256": "f9a8f12a8d1c61aec3580f7f95dd7fd44a26860ff751d85d5a778693f59c55a8",
+    "context_config_id": "0e7fd58314ff",
+    "corpus_version": "1.0.0",
+    "generation_config_id": "cbc4e415c848",
+    "guardrail_policy_id": "3f202ebc205a",
+    "model": "gpt-5.4-mini-2026-03-17",
+    "prompt_id": "2a45c8422c20",
+    "response_contract_id": "debe65096147",
+    "retrieval_policy_id": "f20913f1c1ec",
+    "tokenizer": "tiktoken-0.14.0/o200k_base",
+    "vocabulary_id": "50057f9259f6"
+  },
+  "manifest_schema_version": 1,
+  "policy": {
+    "excluded": "model-output failures",
+    "inputs": "frozen dev split metadata and verified response status only",
+    "order": "sha256(seed|question_id) ascending within stratum",
+    "quotas": {
+      "cross_doc_comparison/answered": 2,
+      "single_doc_conceptual/answered": 2,
+      "single_doc_factual/abstained": 1,
+      "single_doc_factual/answered": 2,
+      "temporal_multi_evidence/answered": 1,
+      "unanswerable/abstained": 2,
+      "unanswerable/answered": 1
+    },
+    "seed": "founderlens-partition-v1",
+    "strata": "(question category, response bucket: answered|abstained; partially_answered counts as answered)",
+    "version": 1
+  },
+  "policy_id": "f0c429d4ecc4",
+  "scheduled_outcomes": 24,
+  "source_run_id": "live-20261124T045739024562Z-8665d379",
+  "split_sha256": "12d6c7f5e3161f3aa6848597e3f031005a4e4d6347c140db57d40fee0162a8cb"
+}

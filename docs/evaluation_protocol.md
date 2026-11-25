@@ -899,8 +899,8 @@ rationale text and must never be committed or published.
    financial value, factual correctness and a reference-fact entry per
    required fact, and answer completeness, abstention appropriateness and
    relevance. Annotator IDs must be pseudonyms (`ann-` plus 2–16 lowercase
-   letters or digits); names and e-mail addresses are refused. The role is
-   `calibration` (default) or `evaluation`.
+   letters or digits); names and e-mail addresses are refused. The role comes
+   from the frozen allocation (§20); a conflicting `--role` is refused.
 3. The reviewer edits the worksheet: for each decided unit, `label` (and
    `not_assessable_reason`, evidence spans as chunk ID plus code-point
    offsets, `reference_basis`, `evidence_sufficiency`, optional `error_type`
@@ -978,8 +978,9 @@ statistic (for example Cohen's kappa) is computed in this commit; Commit 7.4
 may compute one only on units with at least two independent reviews
 (`independently_reviewed_units`), never from missing reviewer pairs.
 
-**Partitions.** A question belongs to the `calibration` or `evaluation`
-partition of its first ledger entry, withdrawn entries included. Any later
+**Partitions.** A question's partition is fixed by the frozen allocation
+manifest (§20), which imports enforce. Within the ledger, a question also
+belongs to the partition of its first entry, withdrawn entries included. Any later
 entry with the other role on that question, for any claim, unit or
 synthetic variant, is refused, so a question used for rubric or judge tuning
 never reappears as independent evaluation data. Synthetic variants inherit
@@ -1173,8 +1174,8 @@ independent evaluator, and a separate request does not make it one. Its errors
 may correlate with the generator's.
 
 **Jobs.** Jobs are the existing judgment units of the §17 templates on eligible
-answers of one selected partition (questions whose ledger partition is
-`calibration` or `evaluation`); model-output failures get none. A job names the
+answers of one selected partition (the questions the frozen allocation, §20,
+assigns to `calibration` or `evaluation`); model-output failures get none. A job names the
 source run, record digest, question, rubric and judge configuration, dimension,
 exact unit identity, admissible evidence references, allowed labels, partition
 and lineage (`natural`). Job and batch IDs are content hashes; every planned job
@@ -1275,5 +1276,67 @@ and no judge output exists, so no agreement has been measured.
 answers, `dev-016` and `dev-021` excluded; 325 jobs (51 citation support,
 36 faithfulness, 108 attribution, 27 numerical, 37 factual, 22 each answer-level)
 in 108 requests (33 citation, 17 faithfulness, 17 attribution, 19
-reference-assisted, 22 answer-level); 0 provider calls. Without human labels no
-question has a partition, so a live run would be refused.
+reference-assisted, 22 answer-level); 0 provider calls. With the §20
+allocation the calibration and evaluation plans hold 54 requests each.
+
+
+## 20. Frozen calibration/evaluation allocation (v1.4, Commit 7.6A)
+
+`founderlens.evaluation.partition` freezes which eligible development answers of
+`live-20261124T045739024562Z-8665d379` are **calibration** and which are
+**evaluation**. The manifest `evaluation/partitions/live-20261124T045739024562Z-8665d379.json`
+(allocation manifest `d3b06dedd4f0`) holds identifiers, categories, statuses, counts and
+hashes only: manifest schema version, source run, dataset and split hashes,
+dataset version, collection and generation identities, the digest of the eligible
+question set (IDs and record digests), the policy and its ID, the exact
+assignments, the excluded model-output failures, coverage per partition and a
+disclosure. It contains no question, answer, passage or label. This is an internal
+development split, **not** an independent or sealed held-out test.
+
+**Policy** `f0c429d4ecc4` (its canonical JSON is hashed; the ID was recomputed, not
+copied). Eligible questions are grouped by category and generator abstention
+status (`insufficient_evidence` or a local abstention counts as abstained;
+`partially_answered` as answered). Within each group, questions are ordered by
+`sha256("founderlens-partition-v1|" + question_id)` and the group's explicit quota
+goes to calibration: factual answered 2, factual abstained 1, conceptual 2,
+cross-document 2, temporal 1, unanswerable abstained 2, and the sole answered
+unanswerable question 1. The quotas are part of the policy (about half of each
+group, chosen to give 11 + 11); they are not derived by a rounding rule. The
+rest, including any group without a quota, is evaluation.
+
+| Partition | Questions | Questions with claims | Judgment units | Reference facts | Judge requests |
+|---|---|---|---|---|---|
+| Calibration | dev-001, 002, 005, 009, 010, 015, 017, 019, 020, 023, 024 | 8 | 167 | 17 | 54 |
+| Evaluation | dev-003, 004, 006, 007, 008, 011, 012, 013, 014, 018, 022 | 9 | 158 | 20 | 54 |
+
+`dev-016` and `dev-021` are model-output failures: reliability outcomes with no
+semantic annotation or judging.
+
+**Enforcement (fail closed).** Every load recomputes the allocation from the frozen
+run and refuses a manifest whose digest, policy, source run, dataset or generation
+identities, eligible set or assignments differ, or that is missing.
+`annotation worksheet` takes the role from the manifest and refuses a conflicting
+`--role`; `annotation validate` and `import` refuse a worksheet whose role differs
+from the manifest, a model-output failure, a question outside the allocation and any
+ledger history (withdrawn entries included) that contradicts the manifest; nothing
+is imported in those cases and existing history is never rewritten. Withdrawals and
+revisions cannot move a question, and synthetic variants inherit their source
+question's partition. `python -m founderlens.evaluation.partition preflight --run
+<run_id>` lists existing worksheets and ledger conflicts read-only.
+
+**Judge.** A partitioned judge plan selects exactly the manifest's questions for
+that partition, requires the manifest and refuses ledger conflicts. The allocation
+manifest ID is part of the plan, the pre-registration, every record (judge record
+schema v2) and the summary; `run_judge` refuses a plan built with another
+allocation or whose batches name a question outside the partition, before
+pre-registering, and `replay` refuses records produced under another allocation.
+The judge configuration (`0a8a9b3b27c7`), prompt and schema are unchanged: the
+allocation is a separate, versioned input. No human label enters a judge request.
+
+**Statistical limits.** No human agreement has been measured. Only 8 calibration
+questions contain claims and answer-level dimensions have 11 calibration questions,
+so under the unchanged thresholds (10 question clusters and 20 usable pairs) no
+planned calibration dimension can produce a bootstrap interval; calibration results
+will be point estimates. The only missed-abstention candidate (`dev-024`) is in
+calibration, so the evaluation partition cannot measure that failure class. The
+judge uses the same model as the generator.

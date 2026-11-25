@@ -10,7 +10,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
 | 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
 | 5 | Cross-Document Reasoning & Guardrails | Complete (diagnostic acceptance; Commits 6.1–6.3; 6.4 deferred) |
-| 6 | RAG Evaluation & Benchmarking | In progress (Commits 7.1 rubric and judgment contracts, 7.2 deterministic financial checks, 7.3 annotation and calibration workflow, 7.4 agreement statistics, 7.5 judge pipeline) |
+| 6 | RAG Evaluation & Benchmarking | In progress (Commits 7.1 rubric and judgment contracts, 7.2 deterministic financial checks, 7.3 annotation and calibration workflow, 7.4 agreement statistics, 7.5 judge pipeline, 7.6A frozen partitions) |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
 
@@ -376,6 +376,10 @@ Commits:
   classes, zero SDK retries and one budgeted repair, gated live path,
   pre-registration, sealed records and offline replay. *(implemented; offline;
   verified with a fake provider; no paid judge request made)*
+- Commit 7.6A: frozen question-level calibration/evaluation allocation (protocol
+  §20; manifest `d3b06dedd4f0`, policy `f0c429d4ecc4`; 11 + 11 questions, 2
+  model-output failures excluded) enforced by worksheet creation, import, judge
+  planning, execution and replay. *(implemented; offline; no labels)*
 - Commits 7.6–7.8: authorized calibration and evaluation runs, reporting,
   regression procedures. *(planned; paid steps need explicit authorization)*
 

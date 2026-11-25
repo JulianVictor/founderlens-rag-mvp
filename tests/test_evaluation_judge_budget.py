@@ -19,6 +19,7 @@ from founderlens.evaluation import annotation as an
 from founderlens.evaluation import judge as jd
 from founderlens.evaluation.judgments import Role
 from founderlens.generation.schema import TokenUsage
+from tests.test_evaluation_annotation import manifest
 from tests.test_evaluation_judge import (
     INJECTION,
     NOW,
@@ -48,7 +49,8 @@ def execute(
     cap: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     outputs = jd.run_judge(context, plan, lambda: provider, tmp_path, mode="mock",
-                           max_requests=cap, git=CLEAN, now=lambda: NOW)  # fmt: skip
+                           max_requests=cap, git=CLEAN,
+                           manifest=manifest(context), now=lambda: NOW)  # fmt: skip
     return jd.read_records(outputs.records_path), dict(outputs.summary)
 
 
@@ -60,7 +62,7 @@ def test_rejected_before_the_provider_consumes_no_attempt(
     ctx: an.AnnotationContext,  # noqa: F811
     tmp_path: pathlib.Path,
 ) -> None:
-    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, calibration_ledger(ctx), Role.CALIBRATION, manifest=manifest(ctx))
     tampered = dataclasses.replace(
         plan, batches=tuple(dataclasses.replace(b, input_sha256="0" * 64) for b in plan.batches)
     )
@@ -77,7 +79,7 @@ def test_invalid_responses_count_once_each_and_yield_nothing(
 ) -> None:
     ledger = calibration_ledger(ctx)
     injected = with_text(ctx, " " + INJECTION)
-    plan = jd.plan_jobs(injected, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(injected, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     provider = FakeJudge(extra_unit, usage=USAGE)
     records, summary = execute(injected, plan, tmp_path, provider, cap=len(plan.batches) * 2)
     # each batch: the invoked request (1) plus its one structured-output repair (1)
@@ -97,7 +99,7 @@ def test_repairs_count_and_a_blocked_repair_does_not(
     tmp_path: pathlib.Path,
 ) -> None:
     ledger = calibration_ledger(ctx)
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
     repaired = FakeJudge(lambda p, call: [] if call == 1 else default_results(p))
     records, _ = execute(ctx, plan, tmp_path / "repaired", repaired, cap=50)
     assert [a["repair"] for a in records[0]["attempts"]] == [False, True]
@@ -116,7 +118,7 @@ def test_attempts_never_exceed_the_cap_or_reset(
     cap: int,
 ) -> None:
     ledger = calibration_ledger(ctx)
-    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION)
+    plan = jd.plan_jobs(ctx, ledger, Role.CALIBRATION, manifest=manifest(ctx))
 
     def alternating(payload: dict[str, Any], call: int) -> list[dict[str, Any]]:
         results = default_results(payload)

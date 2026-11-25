@@ -1974,6 +1974,15 @@ founderlens.evaluation.judging_input --run <run_id>` prints a public summary
 answers (36 claims, 33 citations), 2 ineligible model-output failures
 (`dev-016`, `dev-021`). No judgment, label or score exists yet.
 
+## Frozen partition allocation (Stage 6, Commit 7.6A)
+
+`founderlens.evaluation.partition` (protocol §20) builds and verifies the
+committed `evaluation/partitions/<run_id>.json` manifest by recomputing the
+allocation from the verified run; `PartitionManifest` maps question IDs to
+roles. `annotation.create_worksheet`/`import_worksheet` and `judge.plan_jobs`/
+`run_judge`/`replay` require it and fail closed; `preflight` reports legacy
+worksheets and ledger conflicts read-only.
+
 ## LLM-as-a-judge pipeline (Stage 6, Commit 7.5)
 
 `founderlens.evaluation.judge` (protocol §19; judge configuration `0a8a9b3b27c7`)

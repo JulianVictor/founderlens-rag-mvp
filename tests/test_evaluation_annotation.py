@@ -22,6 +22,7 @@ from founderlens.evaluation import annotation as an
 from founderlens.evaluation import calibration as cal
 from founderlens.evaluation import financial_checks as fc
 from founderlens.evaluation import generation_eval as ge
+from founderlens.evaluation import partition as pt
 from founderlens.evaluation.judgments import EvidenceKind, Role, rubric_id
 from tests.test_evaluation_generation_eval import SPLIT
 from tests.test_evaluation_judging_input import CLEAN, _run, _verify
@@ -56,6 +57,19 @@ def ctx(inputs: dict[str, Any]) -> an.AnnotationContext:
 @pytest.fixture
 def paths(tmp_path: pathlib.Path, ctx: an.AnnotationContext) -> an.AnnotationPaths:
     return an.AnnotationPaths(tmp_path / "annotation" / ctx.run.run_id)
+
+
+# The synthetic run's allocation: dev-003 (temporal, answered) is calibration; the other
+# eligible answers (dev-002, dev-004, dev-005, dev-006) are evaluation; dev-001 failed.
+SYNTHETIC_POLICY = {
+    **pt.POLICY_V1,
+    "seed": "founderlens-synthetic-test",
+    "quotas": {"temporal_multi_evidence/answered": 1},
+}
+
+
+def manifest(ctx: an.AnnotationContext) -> pt.PartitionManifest:
+    return pt.verify_manifest(ctx, pt.build_manifest(ctx, SYNTHETIC_POLICY))
 
 
 # --- helpers ----------------------------------------------------------------------------------
@@ -267,16 +281,16 @@ def test_partial_progress_round_trips_and_reimports_idempotently(
     supported(ws)
     path = paths.worksheets / "dev-003.ann-a1.json"
     an.write_json(path, ws)
-    dry = an.import_worksheet(ctx, paths, path, dry_run=True, now=NOW)
+    dry = an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), dry_run=True, now=NOW)
     assert len(dry.accepted) == 1
     assert not paths.ledger.exists()
-    first = an.import_worksheet(ctx, paths, path, now=NOW)
+    first = an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), now=NOW)
     assert (len(first.accepted), first.pending) == (1, len(ws["entries"]) - 1)
-    again = an.import_worksheet(ctx, paths, path, now=NOW)
+    again = an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), now=NOW)
     assert (len(again.accepted), again.duplicates) == (0, 1)  # no duplicate judgment
     supported(ws, 2, "E03")
     an.write_json(path, ws)
-    later = an.import_worksheet(ctx, paths, path, now=NOW)
+    later = an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), now=NOW)
     assert (len(later.accepted), later.duplicates) == (1, 1)
     ledger = an.load_ledger(paths.ledger)
     assert len(ledger.entries) == 2
@@ -427,7 +441,7 @@ def test_ledger_digests_catch_accidental_edits(
     supported(ws)
     path = paths.worksheets / "dev-003.ann-a1.json"
     an.write_json(path, ws)
-    an.import_worksheet(ctx, paths, path, now=NOW)
+    an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), now=NOW)
     assert len(an.load_ledger(paths.ledger).entries) == 1
     text = paths.ledger.read_text(encoding="utf-8")
     paths.ledger.write_text(text.replace('"supported"', '"unsupported"'), encoding="utf-8")
@@ -866,10 +880,14 @@ def test_held_out_split_is_never_opened_and_nothing_is_labelled_automatically(
 
         monkeypatch.setattr(pathlib.Path, name, spy)
     summary = an.write_packets(ctx, paths)
-    an.create_worksheet(ctx, paths, "dev-003", "ann-a1", Role.CALIBRATION)
+    an.create_worksheet(ctx, paths, "dev-003", "ann-a1", Role.CALIBRATION, manifest=manifest(ctx))
     with pytest.raises(an.AnnotationError, match="already exists"):
-        an.create_worksheet(ctx, paths, "dev-003", "ann-a1", Role.CALIBRATION)
-    result = an.import_worksheet(ctx, paths, paths.worksheets / "dev-003.ann-a1.json", now=NOW)
+        an.create_worksheet(
+            ctx, paths, "dev-003", "ann-a1", Role.CALIBRATION, manifest=manifest(ctx)
+        )
+    result = an.import_worksheet(
+        ctx, paths, paths.worksheets / "dev-003.ann-a1.json", manifest=manifest(ctx), now=NOW
+    )
     assert (result.accepted, summary["human_judgments_created"]) == ((), 0)
     assert summary["verified_reference_facts_created"] == 0
     assert not paths.ledger.exists()
@@ -1078,12 +1096,12 @@ def test_failed_or_interrupted_imports_leave_the_ledger_unchanged(
     ws = sheet(ctx)
     path = paths.worksheets / "dev-003.ann-a1.json"
     an.write_json(path, only(ws, supported(ws)))
-    an.import_worksheet(ctx, paths, path, now=NOW)
+    an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), now=NOW)
     before = paths.ledger.read_bytes()
     bad = {**_judge(ws, "answer_relevance", "directly_answers"), "label": "wrong"}
     an.write_json(path, only(ws, supported(ws, 2, "E03"), bad))  # one valid, one invalid
     with pytest.raises(an.AnnotationError, match="entry 2"):
-        an.import_worksheet(ctx, paths, path, now=NOW)
+        an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), now=NOW)
     assert paths.ledger.read_bytes() == before  # no partial write
     an.write_json(path, only(ws, supported(ws, 2, "E03")))
 
@@ -1093,7 +1111,7 @@ def test_failed_or_interrupted_imports_leave_the_ledger_unchanged(
     with monkeypatch.context() as patch:
         patch.setattr(pathlib.Path, "replace", interrupted)
         with pytest.raises(OSError, match="interrupted"):
-            an.import_worksheet(ctx, paths, path, now=NOW)
+            an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), now=NOW)
     assert paths.ledger.read_bytes() == before
     assert not paths.ledger.with_name("ledger.jsonl.tmp").exists()
     original = an.plan_import
@@ -1105,7 +1123,7 @@ def test_failed_or_interrupted_imports_leave_the_ledger_unchanged(
 
     monkeypatch.setattr(an, "plan_import", concurrent)
     with pytest.raises(an.AnnotationError, match="changed during import"):
-        an.import_worksheet(ctx, paths, path, now=NOW)
+        an.import_worksheet(ctx, paths, path, manifest=manifest(ctx), now=NOW)
 
 
 def test_worksheets_outside_the_private_directory_are_refused(
@@ -1114,7 +1132,7 @@ def test_worksheets_outside_the_private_directory_are_refused(
     outside = tmp_path / "elsewhere.json"
     an.write_json(outside, sheet(ctx))
     with pytest.raises(an.AnnotationError, match="private annotation directory"):
-        an.import_worksheet(ctx, paths, outside, now=NOW)
+        an.import_worksheet(ctx, paths, outside, manifest=manifest(ctx), now=NOW)
 
 
 def test_reprs_hide_private_text(ctx: an.AnnotationContext) -> None:
