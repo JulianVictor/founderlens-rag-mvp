@@ -1974,6 +1974,17 @@ founderlens.evaluation.judging_input --run <run_id>` prints a public summary
 answers (36 claims, 33 citations), 2 ineligible model-output failures
 (`dev-016`, `dev-021`). No judgment, label or score exists yet.
 
+## Agreement statistics (Stage 6, Commit 7.4)
+
+`founderlens.evaluation.agreement` (protocol §18; configuration `6f37129cddc2`) pairs
+decisions from the annotation `Ledger` (independent human decisions; human
+reference labels) and judge `Judgment`s bound through `check_judgment`, keeps
+human–human, human–judge and synthetic-stress populations apart per question
+partition, and computes exact raw agreement, Cohen's kappa, Gwet's AC1,
+ordinal weighted kappa, confusion matrices and a seeded question-clustered
+bootstrap. `build_report` returns a public aggregate and a private detail; it
+writes nothing unless the CLI is given `--write`.
+
 ## Human annotation and calibration (Stage 6, Commit 7.3)
 
 `founderlens.evaluation.annotation` (protocol §17) loads a frozen run through

@@ -10,7 +10,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
 | 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
 | 5 | Cross-Document Reasoning & Guardrails | Complete (diagnostic acceptance; Commits 6.1–6.3; 6.4 deferred) |
-| 6 | RAG Evaluation & Benchmarking | In progress (Commits 7.1 rubric and judgment contracts, 7.2 deterministic financial checks, 7.3 annotation and calibration workflow) |
+| 6 | RAG Evaluation & Benchmarking | In progress (Commits 7.1 rubric and judgment contracts, 7.2 deterministic financial checks, 7.3 annotation and calibration workflow, 7.4 agreement statistics) |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
 
@@ -363,7 +363,12 @@ Commits:
   explicit fact associations, a versioned calibration-set selection and
   human-reviewed synthetic variants. *(implemented; offline; no human labels
   created yet)*
-- Commit 7.4: agreement statistics. *(planned)*
+- Commit 7.4: agreement statistics (protocol §18): human–human and human–judge
+  pairing over the annotation ledger, Cohen's kappa, Gwet's AC1, linearly
+  weighted kappa for ordinal relevance, confusion matrices, explicit
+  non-substantive and exclusion accounting, question-clustered bootstrap
+  intervals and the planned kappa 0.60 target (configuration `6f37129cddc2`).
+  *(implemented; offline; no labels or judge outputs exist, nothing measured)*
 - Commit 7.5: frozen judge configuration and mocked judge workflow. *(planned)*
 - Commits 7.6–7.8: authorized calibration and evaluation runs, reporting,
   regression procedures. *(planned; paid steps need explicit authorization)*

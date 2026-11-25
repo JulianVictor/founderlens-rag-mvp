@@ -12,8 +12,8 @@
 > adds a narrowly scoped Stage 5 diagnostic amendment (§13). v1.3 adds
 > prospective execution-complete reporting (§14). v1.4 adds the formal
 > judging rubric and contracts (§15), deterministic financial checks
-> (§16) and the human-annotation and calibration workflow (§17); the
-> judge, the human labels themselves and scoring
+> (§16), the human-annotation and calibration workflow (§17) and agreement
+> statistics (§18); the judge, the human labels themselves and scoring
 > are implemented in later Stage 6 commits. No formal answer-quality result
 > exists yet.
 
@@ -1037,3 +1037,112 @@ packets and 362 pending template units (325 judgments, 37 reference facts),
 including 51 distinct pending claim-by-citation units; all 325 judgment units
 `unlabeled`, 0 independently reviewed; 0 human judgments, 0 verified facts,
 0 associations; calibration set empty.
+
+
+## 18. Agreement statistics and judge calibration analysis (v1.4, Commit 7.4)
+
+`founderlens.evaluation.agreement` (analysis configuration v1, `6f37129cddc2`) measures
+agreement offline over the private annotation ledger (§17) and, later, judge
+outputs. It creates no labels and calls no model. **Agreement measures
+consistency between raters, not factual truth:** two raters can agree on a wrong
+label, and a judge that matches a single reviewer has matched that reviewer's
+judgment, not the facts.
+
+**Two comparisons.** *Human–human* agreement compares two reviewers' own
+current decisions on the same unit: withdrawn entries, superseded revisions and
+adjudications are never used as either decision (adjudication resolves a
+reference label; it is not an independent rating). Distinct pseudonyms are
+taken as distinct people; the workflow cannot verify that. The headline uses
+**one fixed reviewer pair** for every unit, so a single kappa never mixes
+different rater pairs: the pair named with `--reviewers`, otherwise the pair
+sharing the most independently reviewed units (ties broken by the
+lexicographic order of the pseudonyms). Only units both selected reviewers
+decided enter it; the report gives the intersection and the units missing the
+first or second reviewer's label or reviewed only by others. The pair is
+identified publicly by a hash of the sorted pseudonyms (`reviewer_pair_id`).
+Every other reviewer pair is a separate population with its own kappa and a
+warning that pairs share units and are not independent. Agreement is always computed
+from the paired decisions, never inferred from the `independently_agreed`
+review state. *Human–judge* agreement compares a unit's human reference label
+(`single_reviewed`, `independently_agreed` or `adjudicated`; disputed and
+withdrawn units have none) with a judge label for the identical question, run,
+record digest, rubric, dimension and unit; it is available with a single human
+reviewer. Judge outputs must be §15 `Judgment`s with `judge` provenance that
+bind through `check_judgment`; foreign rubrics, stale records, unbound units,
+model-output failures, duplicate outputs, missing references and role/partition
+conflicts are excluded and counted, as are human references with no judge label.
+Each human–judge population discloses how many references were single-reviewed,
+independently agreed or adjudicated: agreement with one reviewer is agreement
+with that reviewer, not independently established truth.
+No judge exists yet; only synthetic fixtures exercise this path.
+
+**Populations.** Human–human, human–judge (per judge configuration) and
+synthetic stress (per judge configuration, judge labels on human-accepted
+synthetic variants against their expected labels) are separate populations,
+each split by the original question's calibration/evaluation partition (§17,
+withdrawn history included). Synthetic results are never pooled into natural
+figures, and calibration questions and their variants never appear in an
+evaluation population. Distinct claim-by-citation units stay distinct.
+
+**Statistics** (per dimension; label sets differ, so dimensions are never
+pooled). Raw agreement (agreements, disagreements, pairs, rate); Cohen's kappa
+with explicit observed and expected agreement, `(p_o - p_e) / (1 - p_e)` with
+`p_e = sum_k p_ref(k) p_cmp(k)`, undefined when there are no pairs or
+`p_e = 1`; Gwet's AC1, `p_e = (1 / (q - 1)) sum_k pi_k (1 - pi_k)` with
+`pi_k` the mean of the two raters' class proportions and `q` the number of
+substantive rubric classes, reported as a complement to kappa (it is less
+sensitive to skewed prevalence), never a replacement; linearly weighted kappa,
+`w_ij = 1 - |s_i - s_j| / (s_max - s_min)`, only for dimensions with rubric
+ordinal scores (answer relevance 0/1/2) and refused for nominal ones; and a
+confusion matrix over all rubric labels in rubric order with marginals and
+per-class disagreements. All arithmetic is exact (rational) before rounding to
+six decimals. Estimates are **unit-level**: every paired judgment unit (each
+claim, each claim-by-citation association, each answer-level unit) counts once,
+so questions with more units weigh more; reports therefore give the number of
+questions and paired units, per-question paired and primary counts (IDs only),
+per-question-category counts with small-sample flags (fewer than 30 pairs or
+fewer than 10 questions; no per-category interval is ever computed), class
+prevalence, scheduled units and coverage. The target uses Cohen's kappa only;
+AC1 is never substituted for an undefined or low kappa.
+
+**Non-substantive labels.** The primary statistics use pairs where both labels
+are substantive. Pairs with `not_assessable`, `not_applicable` or `unverified`
+are excluded from them but counted (`assessability_mismatch` when only one
+side is substantive, `both_non_substantive` otherwise) and stay visible as
+distinct classes in the confusion matrix; missing, withdrawn, disputed and
+adjudicated decisions are counted by code. Coverage of the scheduled units is
+always reported, so excluding difficult items cannot hide behind a high rate:
+each dimension also reports the primary share and how many non-substantive
+labels each side gave, and flags `low_primary_share` below 0.8, so a judge that
+marks many units `not_assessable` cannot look reliable on the easy remainder.
+Every threshold above is part of the configuration identity.
+
+**Confidence intervals.** Percentile intervals for kappa come from a bootstrap
+that resamples whole original questions (every claim, citation and answer unit
+of a sampled question together), with seed 20261125, 2000 replicates and 95 %
+confidence. With fewer than 10 question clusters or 20 primary pairs the result
+is `insufficient_data` and no interval is given. Undefined replicates are
+counted and dropped; if more than 10 % are undefined the result is
+`unstable_too_many_undefined`. An interval whose every replicate is equal (for
+example when all observed labels match) is withheld as `degenerate_interval`
+rather than reported as certainty.
+
+**Calibration target.** The planned acceptance target is Cohen's kappa of at
+least 0.60. Reports give the point estimate, interval status, pairs, clusters,
+prevalence and exclusions. Undefined kappa is `insufficient_information`,
+neither a pass nor a failure, and a point estimate at or above 0.60 with a
+wide or missing interval does not establish judge reliability.
+
+**Reports.** `python -m founderlens.evaluation.agreement --run <run_id>`
+prints a public aggregate (configuration, rubric and population IDs, counts,
+rates, estimates, confusion matrices, exclusion codes; no question, claim,
+passage, rationale or reviewer ID); `--write` saves the private pair detail
+under `reports/annotation/<run_id>/agreement/`, and `--judge <path>` reads judge
+outputs only from the private annotation directory. Population and report IDs
+are content hashes without timestamps, so the same frozen inputs replay to the
+same report.
+
+**Baseline smoke** (opt-in, read-only): 24 outcomes, 22 eligible answers,
+36 claims, 51 citation-support units, `dev-016` and `dev-021` ineligible; no
+annotation ledger exists, so 0 human–human and 0 human–judge pairs, no
+population and nothing measurable; no label or file was created.
