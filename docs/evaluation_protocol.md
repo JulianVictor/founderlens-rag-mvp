@@ -11,8 +11,9 @@
 > metric definitions exactly (§3) and adds the benchmark freeze (§10). v1.2
 > adds a narrowly scoped Stage 5 diagnostic amendment (§13). v1.3 adds
 > prospective execution-complete reporting (§14). v1.4 adds the formal
-> judging rubric and contracts (§15) and deterministic financial checks
-> (§16); the judge, human labels and scoring
+> judging rubric and contracts (§15), deterministic financial checks
+> (§16) and the human-annotation and calibration workflow (§17); the
+> judge, the human labels themselves and scoring
 > are implemented in later Stage 6 commits. No formal answer-quality result
 > exists yet.
 
@@ -763,7 +764,7 @@ identifiers, codes, counts and rubric identities.
 ## 16. Deterministic financial checks (v1.4, Commit 7.2)
 
 `founderlens.evaluation.financial_checks` (extractor `c6956d52681f`, checker
-`b86609c129e6`; rubric v1 unchanged) supplies the `deterministic` source of
+v2 `c4160f8c38ec`; v1 was `b86609c129e6`; rubric v1 unchanged) supplies the `deterministic` source of
 §15 for the numerical-correctness dimension. Both identities are hashes of
 their full normative definitions: any change to parsing, conversions,
 precision or comparison rules changes them.
@@ -846,3 +847,193 @@ No human label and no answer-level score is produced.
 occurrences (27 financial quantities, 47 period references); every financial
 value is `unverified` (`no_verified_association`); 0 judgments created. This
 says nothing about financial accuracy.
+
+
+## 17. Human annotation and calibration dataset (v1.4, Commit 7.3)
+
+`founderlens.evaluation.annotation` and `founderlens.evaluation.calibration`
+implement a private, offline workflow for human labels under rubric v1
+(`e8b840e4f4af`), human-verified reference facts and explicit fact
+associations (extractor `c6956d52681f`, checker v2 `c4160f8c38ec`), and a
+versioned calibration set. No model is called; no label, fact or association
+is ever created automatically. This commit creates the workflow only: no
+human label exists yet.
+
+**Trust boundaries.** Input comes only through the verified judging-input
+gate (§15), which binds every record to the frozen run, split and V2
+collection; a context whose records, split or collection differ is refused.
+Packets separate three kinds of evidence: `selected_context` (what the
+generator received; claim faithfulness), `cited` (what each claim cites;
+citation support, one citation at a time) and `reference_source` (the
+dataset's trusted pages for each required fact, with flags saying whether a
+chunk was also selected or cited). A reviewer judges support from the source
+passages, not from the answer's wording. Human decisions are the annotator's
+assertions: binding proves only that units, spans and facts exist in the
+frozen artifacts. Labels are single-reviewer unless a second annotator is
+added, and agreement is not yet measured (Commit 7.4).
+
+**Private files** (all under the git-ignored `reports/annotation/<run_id>/`):
+`packets/<question_id>.json` and `packets/index.json` (deterministic, no
+timestamps; an existing packet that differs is never overwritten),
+`worksheets/<question_id>.<annotator>.json` (the reviewer's editable file),
+`ledger.jsonl` (append-only imported decisions) and
+`calibration/<selection_id>.json`. They hold question, claim, passage and
+rationale text and must never be committed or published.
+
+**Workflow.**
+
+1. `python -m founderlens.evaluation.annotation packets --run <run_id>`
+   writes one packet per eligible answer (22 for `live-20261124T045739024562Z-8665d379`) holding the question,
+   category, answerability and expected abstention reason, response status,
+   claims, limitations, the three evidence kinds with chunk text and
+   document/page/chunk IDs, the required fact IDs with the dataset's
+   statement and numeric annotation, and the existing deterministic scope and
+   financial diagnostics (each claim value's span, `value_index` and check
+   codes; no association is assumed).
+2. `... annotation worksheet --run <run_id> --question dev-NNN --annotator ann-xx`
+   writes a worksheet listing every judgeable unit with
+   `review_action: "pending"` and no label: claim faithfulness per claim,
+   citation support per claim-to-evidence association, financial
+   attribution (company, period, basis) per claim, numerical correctness per
+   financial value, factual correctness and a reference-fact entry per
+   required fact, and answer completeness, abstention appropriateness and
+   relevance. Annotator IDs must be pseudonyms (`ann-` plus 2–16 lowercase
+   letters or digits); names and e-mail addresses are refused. The role is
+   `calibration` (default) or `evaluation`.
+3. The reviewer edits the worksheet: for each decided unit, `label` (and
+   `not_assessable_reason`, evidence spans as chunk ID plus code-point
+   offsets, `reference_basis`, `evidence_sufficiency`, optional `error_type`
+   and private `rationale` as the rubric requires) and sets
+   `review_action: "confirmed"`. Pending entries are skipped, so work can stop
+   and resume at any point. Additional units (other numeric aspects,
+   decompositions, associations) are added as entries.
+4. `... annotation validate --run <run_id> --worksheet <path>` checks
+   without writing; `... annotation import ...` appends the confirmed,
+   new or changed entries to the ledger. Import is all-or-nothing and
+   idempotent: an unchanged decision is a duplicate and is skipped.
+5. `... annotation status --run <run_id>` and
+   `... annotation history --run <run_id> --question dev-NNN` print counts,
+   entry IDs, revisions and label codes only.
+
+**Human labels.** Each confirmed judgment is built as a §15 `Judgment` with
+`human` provenance and checked by `check_judgment` against the run (question,
+record digest, claim, citation, fact, decomposition and evidence offsets and
+hashes) plus the claim's numeric values. A citation never makes a claim
+supported, and `insufficient_evidence` never makes an abstention correct:
+nothing is pre-labelled.
+
+**Reference facts.** A `reference_fact` entry becomes a
+`VerifiedReferenceFact` only with `review_action: "confirmed"` and every
+field stated: required fact ID of this question, metric, corpus company,
+approved segment or none, period label and fiscal/calendar basis, value with
+unit, scale and currency, accounting basis, and `reference_source` spans
+pinned by the V2 evidence-reference contract on one of that fact's trusted
+dataset pages. A trusted page that merely contains the same number verifies
+nothing: only the reviewer's explicit confirmation does. The verifier is the
+worksheet's annotator. Attributes are never invented: currency and scale
+apply to monetary values only, a monetary fact without an established
+currency cannot be confirmed, and an accounting basis the source does not
+establish is recorded as `unverified` (checker v2 then reports every basis
+check against it as `unverified`, `reference_basis_not_verified`). This is
+the only change to the Commit 7.2 checker; its version and ID changed from
+v1 `b86609c129e6` to v2 `c4160f8c38ec`. Ambiguous data is recorded as `unresolved`
+with a reason, never as a verified fact. Unresolved, withdrawn and disputed
+(unadjudicated) facts are never consumed as verified references.
+
+**Associations.** A `fact_association` entry binds one claim value (claim
+position, `value_index`, exact span) to one verified fact of the same
+question and the metric the associator asserts; it reuses the Commit 7.2
+`FactAssociation` validation. Foreign questions, stale record digests,
+missing claims, wrong spans or indexes, periods or years named as values,
+unknown, unresolved or disputed facts, mismatched metrics and wrong source
+artifacts are refused. Equal numbers are never linked automatically.
+
+**Provenance and revisions.** Every ledger entry records the rubric,
+extractor and checker IDs, run ID, record and packet digests, collection
+digest, question, unit, annotator pseudonym, role, label or payload,
+rationale, revision number, the entry it supersedes and a revision reason,
+the worksheet digest and import time. Changing a decision requires naming
+the current entry (`supersedes`) and a `revision_reason`; otherwise the
+import is refused as a conflict. Withdrawals are entries too, so history is
+never overwritten. Worksheets are read only from inside the private
+annotation directory. Import is all-or-nothing and atomic: the new ledger is
+written to a temporary file and moved into place in one step, and an import
+is refused if the ledger changed while it was validated, so a failed or
+interrupted import leaves the previous ledger unchanged. The ledger
+re-verifies each entry digest and revision chain on load; this detects
+accidental edits but does not make the files tamper-proof.
+
+**Review states.** Each unit is in exactly one state: `unlabeled` (no entry),
+`single_reviewed` (one reviewer's current entry), `independently_agreed`
+(two or more distinct reviewers with the same decision), `disputed`
+(differing decisions, no adjudication), `adjudicated` (an entry marked
+`adjudication: true` by a reviewer who did not review the unit
+independently, accepted only while two other reviewers disagree) or
+`withdrawn` (every current entry withdrawn). Superseded revisions remain as
+history. One reviewer can never produce agreement, because a reviewer has
+one chain per unit; reviewer IDs are pseudonyms, so the workflow cannot
+detect one person using two IDs and the owner must not do so. No agreement
+statistic (for example Cohen's kappa) is computed in this commit; Commit 7.4
+may compute one only on units with at least two independent reviews
+(`independently_reviewed_units`), never from missing reviewer pairs.
+
+**Partitions.** A question belongs to the `calibration` or `evaluation`
+partition of its first ledger entry, withdrawn entries included. Any later
+entry with the other role on that question, for any claim, unit or
+synthetic variant, is refused, so a question used for rubric or judge tuning
+never reappears as independent evaluation data. Synthetic variants inherit
+their source question's partition and lineage.
+
+**Calibration set.** Natural examples are decided human labels
+(`single_reviewed`, `independently_agreed` or `adjudicated`, each labelled
+with its state) on calibration-partition questions, categorized as supported or unsupported claims, compound
+claims with mixed subclaim support, supported, partial or invalid citations,
+wrong company, period, basis, metric, scale or currency, incorrect values or
+calculations, correct, incorrect or missing facts, and correct, false or
+missed abstentions (from the label, unit and optional human `error_type`).
+Single-reviewed examples are admitted for this development calibration set
+but are never reported as agreement; the disclosure counts selected examples
+by review state and the independently reviewed units. Disputed, withdrawn,
+`not_assessable`, `unverified` and `not_applicable` units and units of
+evaluation-partition questions are excluded from selection but counted by
+reason and listed (unit, question, reason, state) in `excluded_units`, so
+difficult and non-assessable cases stay visible to diagnostics. Selection
+policy v1
+(`selection_policy_id`) caps each category, interleaves question category,
+answer state and claim type, and orders by a seeded hash: it uses human
+labels and frozen structure only, never judge output or the held-out split.
+The `selection_id` hashes the policy, run, rubric and candidate labels.
+`python -m founderlens.evaluation.calibration build --run <run_id>` writes the
+set privately and prints counts.
+
+**Synthetic variants.** Versioned deterministic rules (`transformation_id`)
+derive stress-test variants from selected natural examples: scale shift,
+company swap, quarter shift, metric swap, percent shift on calculated claims,
+citation swap, abstention flip and compound join. Each is marked
+`synthetic`, keeps its source example IDs and source text hash, records its
+rule, never modifies the source record, and carries an *expected* label that
+is a rule proposal, not a human judgment.
+`... calibration review-worksheets --run <run_id> --annotator ann-xx` writes
+worksheets in which a human accepts or rejects each expected label
+(`synthetic_review`). Natural and synthetic examples are stored and reported
+separately; synthetic results must never be mixed into natural-output
+performance.
+
+**Model-output failures.** `dev-016` and `dev-021` get no packet, units,
+labels, facts or associations; any worksheet for them is refused. They stay
+reliability outcomes for intention-to-treat summaries.
+
+**Privacy.** CLI output passes `ensure_public`, which refuses private text
+fields (question, claim, passage, statement, rationale, limitation, variant
+text) and long free-text values. Errors name entry numbers and codes only;
+Pydantic errors hide inputs. No credentials, network or external service are
+used.
+
+**Baseline smoke** (opt-in, `live-20261124T045739024562Z-8665d379`, packets written only to a temporary
+directory): 24 outcomes, 22 eligible answers (17 with claims, 5 without),
+36 claims, 51 claim-to-evidence associations, 33 distinct citations, 27
+financial quantities, `dev-016` and `dev-021` ineligible; 22 deterministic
+packets and 362 pending template units (325 judgments, 37 reference facts),
+including 51 distinct pending claim-by-citation units; all 325 judgment units
+`unlabeled`, 0 independently reviewed; 0 human judgments, 0 verified facts,
+0 associations; calibration set empty.

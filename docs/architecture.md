@@ -1974,10 +1974,30 @@ founderlens.evaluation.judging_input --run <run_id>` prints a public summary
 answers (36 claims, 33 citations), 2 ineligible model-output failures
 (`dev-016`, `dev-021`). No judgment, label or score exists yet.
 
+## Human annotation and calibration (Stage 6, Commit 7.3)
+
+`founderlens.evaluation.annotation` (protocol §17) loads a frozen run through
+the verified judging-input gate (`AnnotationContext`), builds deterministic
+private packets that separate selected, cited and reference-source evidence,
+writes pending per-annotator worksheets, and imports confirmed entries
+(judgments, reference facts, fact associations, decompositions, synthetic
+reviews) into an append-only, digest-checked ledger under
+`reports/annotation/<run_id>/`. Judgments reuse the §15 contracts and
+`check_judgment`; facts and associations reuse the Commit 7.2
+`VerifiedReferenceFact` and `FactAssociation`. `Ledger` derives current
+entries, review states (unlabeled, single-reviewed, independently agreed,
+disputed, adjudicated, withdrawn), question partitions, verified facts and
+associations; imports are atomic.
+`founderlens.evaluation.calibration` categorizes agreed human calibration
+labels, selects a stratified, capped calibration set by a versioned policy,
+and derives synthetic variants by versioned deterministic rules, kept
+separate from natural examples and pending human review. Both CLIs print
+counts, IDs and status codes only.
+
 ## Deterministic financial checks (Stage 6, Commit 7.2)
 
 `founderlens.evaluation.financial_checks` (protocol §16; extractor
-`c6956d52681f`, checker `b86609c129e6`) extracts numeric occurrences of a claim with
+`c6956d52681f`, checker v2 `c4160f8c38ec`; v1 `b86609c129e6`) extracts numeric occurrences of a claim with
 stable 1-based `value_index`es and original-text spans, classifies
 non-financial numbers (periods via the frozen scope analyzer, pages, ranges,
 years), and represents stated values as `Decimal` quantities with unit kind,

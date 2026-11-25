@@ -752,7 +752,7 @@ deployment. No formal live evaluation and no held-out results exist.
 3. Retrieval & Vector Search — *complete; BM25 V2 selected for generation*
 4. Grounded RAG Generation — *complete locally (5.1–5.4, offline-verified; live behaviour unverified)*
 5. Cross-Document Reasoning & Guardrails — *complete (diagnostic acceptance; 6.1–6.3; 6.4 deferred)*
-6. RAG Evaluation & Benchmarking — *in progress (7.1 rubric v1 and judgment contracts; 7.2 deterministic financial checks; no labels or scores yet)*
+6. RAG Evaluation & Benchmarking — *in progress (7.1 rubric v1 and judgment contracts; 7.2 deterministic financial checks; 7.3 human-annotation and calibration workflow; no labels or scores yet)*
 7. Streamlit Interactive Demo
 8. Testing, Deployment & Documentation
 

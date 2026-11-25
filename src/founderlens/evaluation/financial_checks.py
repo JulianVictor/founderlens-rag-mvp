@@ -59,7 +59,7 @@ from founderlens.evaluation.judgments import (
 from founderlens.guardrails.scope import CompanyScope, CorpusVocabulary, analyze_question
 
 EXTRACTOR_VERSION: Final = 1
-CHECKER_VERSION: Final = 1
+CHECKER_VERSION: Final = 2  # v2: a reference basis may be 'unverified'
 ROUNDING_MODE: Final = ROUND_HALF_UP
 MINUS_SIGNS: Final = ("-", "\u2212")  # hyphen-minus, minus sign
 DASHES: Final = "-\u2013"  # hyphen-minus, en dash (ranges)
@@ -120,6 +120,7 @@ class Reason(StrEnum):
     BASIS_SIGNAL_ONLY = "basis_keyword_signal_only"
     BASIS_SIGNAL_CONFLICT = "basis_keyword_conflicts_with_fact"
     BASIS_NOT_STATED = "basis_not_stated"
+    BASIS_NOT_VERIFIED = "reference_basis_not_verified"
     MISSING_OPERAND = "missing_verified_operand"
     INCOMPATIBLE_OPERANDS = "incompatible_operands"
     DIVISION_BY_ZERO = "division_by_zero"
@@ -403,7 +404,7 @@ class VerifiedReferenceFact:
     segment: str | None  # None: the consolidated company
     period: ReportingPeriod
     value: Quantity
-    basis: str  # GAAP | non-GAAP | not_applicable
+    basis: str  # GAAP | non-GAAP | not_applicable | unverified (source does not establish it)
     evidence: tuple[EvidenceReference, ...]
     verified_by: str  # pseudonymous annotator ID
     verification_role: Role
@@ -413,7 +414,7 @@ class VerifiedReferenceFact:
             raise FinancialCheckError("a verified fact needs trusted source evidence")
         if not re.fullmatch(r"[A-Za-z0-9._:-]{1,64}", self.verified_by):
             raise FinancialCheckError("verification provenance must name an annotator")
-        if self.basis not in ("GAAP", "non-GAAP", "not_applicable"):
+        if self.basis not in ("GAAP", "non-GAAP", "not_applicable", "unverified"):
             raise FinancialCheckError("unknown accounting basis")
         if self.value.unit is Unit.UNITLESS:
             raise FinancialCheckError("a verified fact states its unit")
@@ -718,6 +719,15 @@ def check_value(
     if fact.basis == "not_applicable":
         out.append(
             result(NumericAspect.FINANCIAL_BASIS.value, Outcome.NOT_APPLICABLE, (), fact.fact_id)
+        )
+    elif fact.basis == "unverified":
+        out.append(
+            result(
+                NumericAspect.FINANCIAL_BASIS.value,
+                Outcome.UNVERIFIED,
+                (Reason.BASIS_NOT_VERIFIED,),
+                fact.fact_id,
+            )
         )
     elif signal == "none":
         out.append(
@@ -1038,7 +1048,9 @@ def checker_definition() -> dict[str, Any]:
         "association": "explicit, attributable, bound to question, record digest, claim "
         "position, value index and span; never inferred from equal numbers",
         "periods": "only periods the claim states; fiscal and calendar never equated",
-        "basis": "GAAP/non-GAAP keywords are a signal, never verification",
+        "basis": "GAAP/non-GAAP keywords are a signal, never verification; a reference fact "
+        "whose basis its verifier could not establish is 'unverified', never guessed, and "
+        "every basis check against it is unverified",
         "currency": "'$' alone is unqualified; no currency or unit is inferred",
         "overall": "a value passes only if every applicable aspect passes",
         "judgment_scope": "one judgment per numeric aspect, for exactly that aspect; a "

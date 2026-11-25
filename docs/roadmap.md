@@ -10,7 +10,7 @@ only when its acceptance criteria are met and verified by the quality gates.
 | 3 | Retrieval & Vector Search | Complete (Commits 3.1–3.4, 4.1–4.3; BM25 on V2 selected for generation, top 10) |
 | 4 | Grounded RAG Generation | Complete locally (Commits 5.1–5.4, offline-verified); live model behaviour and answer quality unverified |
 | 5 | Cross-Document Reasoning & Guardrails | Complete (diagnostic acceptance; Commits 6.1–6.3; 6.4 deferred) |
-| 6 | RAG Evaluation & Benchmarking | In progress (Commits 7.1 rubric and judgment contracts, 7.2 deterministic financial checks) |
+| 6 | RAG Evaluation & Benchmarking | In progress (Commits 7.1 rubric and judgment contracts, 7.2 deterministic financial checks, 7.3 annotation and calibration workflow) |
 | 7 | Streamlit Interactive Demo | Planned |
 | 8 | Testing, Deployment & Documentation | Planned |
 
@@ -353,9 +353,16 @@ Commits:
   extraction with stable `value_index` and spans (extractor `c6956d52681f`),
   Decimal comparison with stated-precision rounding, explicit verified
   reference facts and associations, conservative company, segment, period and
-  basis checks, declared calculations (checker `b86609c129e6`). Baseline smoke:
+  basis checks, declared calculations (checker v1 `b86609c129e6`; v2 `c4160f8c38ec` in 7.3 adds an `unverified` reference basis). Baseline smoke:
   every real value stays unverified; no judgments. *(implemented; offline)*
-- Commit 7.3: annotation packets, human-label import, calibration set. *(planned)*
+- Commit 7.3: private, offline human-annotation workflow (protocol §17):
+  deterministic review packets for the 22 eligible answers, pending
+  worksheets, validated all-or-nothing import into an append-only ledger with
+  revisions, explicit review states, adjudication and question-level
+  calibration/evaluation partitions, human-verified reference facts and
+  explicit fact associations, a versioned calibration-set selection and
+  human-reviewed synthetic variants. *(implemented; offline; no human labels
+  created yet)*
 - Commit 7.4: agreement statistics. *(planned)*
 - Commit 7.5: frozen judge configuration and mocked judge workflow. *(planned)*
 - Commits 7.6–7.8: authorized calibration and evaluation runs, reporting,
